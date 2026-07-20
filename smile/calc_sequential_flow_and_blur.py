@@ -49,6 +49,7 @@ if __name__ == '__main__':
                           key=lambda item: item[1])
         selected_dirpath, _ = dirpaths[0]
         print('Defaulting to the sub-directory containing the shortest sequence of frames', selected_dirpath)
+        working_subdir_config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(working_subdir_config_path, 'w') as config_file:
             config_file.write(selected_dirpath)
 
