@@ -8,8 +8,8 @@ Author: [Mark Hsieh](https://github.com/mcmhsieh)
 
 | Input frames | Generated output |
 | - | - |
-| <img src="docs/images/example-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <a href="docs/images/example-273frames-iso34to37-view_synthesis-output.jpg"><img src="docs/images/example-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/></a>
-| <img src="docs/images/example-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <a href="docs/images/example-351frames-iso45to35-view_synthesis-output.jpg"><img src="docs/images/example-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/></a>
+| <img src="docs/images/example-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/example-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
+| <img src="docs/images/example-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/example-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
 
 See https://github.com/mcmhsieh/ANESOK-401-frame-recorder for information about the dental camera and recording of image sequences.
 
