@@ -1,7 +1,17 @@
 # Smile
-Utility to automatically stitch sequences of intraoral images from a low cost dental camera into a synthetic panoramic view.
+This is a personal research project to develop an automated tool that stitches sequences of intraoral images from a low cost dental camera into a synthetic panoramic view.
 
+Status: *Under Development*  
 Author: [Mark Hsieh](https://github.com/mcmhsieh)
+
+## Examples
+
+| Input frames | Generated output |
+| - | - |
+| <img src="docs/images/example-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <a href="docs/images/example-273frames-iso34to37-view_synthesis-output.jpg"><img src="docs/images/example-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/></a>
+| <img src="docs/images/example-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <a href="docs/images/example-351frames-iso45to35-view_synthesis-output.jpg"><img src="docs/images/example-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/></a>
+
+See https://github.com/mcmhsieh/ANESOK-401-frame-recorder for information about the dental camera and recording of image sequences.
 
 ## Getting Started (Microsoft Windows)
 
