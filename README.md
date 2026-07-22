@@ -17,8 +17,9 @@ See https://github.com/mcmhsieh/ANESOK-401-frame-recorder for information about 
 ## Getting Started (Microsoft Windows)
 
 ### Setting up
-- Clone https://github.com/mcmhsieh/Smile.git or download a copy of the repository
+- Clone https://github.com/mcmhsieh/Smile.git with `--recursive` or `--recurse-submodules` to initialise and clone submodules
 - If your system supports CUDA, install an up-to-date NVIDIA Graphics Driver[^InstallingCudaRuntime]
+  - *if your system doesn't support CUDA, PyTorch will just use the CPU*
 - Install Python 3.11
 - Create a virtual environment and activate it
 - Install Python Poetry and use it to install the dependencies specified in [poetry.lock](poetry.lock)[^InstallingPyTorch3D]
