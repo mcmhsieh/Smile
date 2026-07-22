@@ -19,8 +19,9 @@ See https://github.com/mcmhsieh/ANESOK-401-frame-recorder for information about 
 ### Setting up
 - Clone https://github.com/mcmhsieh/Smile.git or download a copy of the repository
 - If your system supports CUDA, install an up-to-date NVIDIA Graphics Driver[^InstallingCudaRuntime]
-- Install Python 3.11 and Python Poetry
-- Create a virtual environment, activate it, and use Poetry to install the dependencies[^InstallingPyTorch3D]
+- Install Python 3.11
+- Create a virtual environment and activate it
+- Install Python Poetry and use it to install the dependencies specified in [poetry.lock](poetry.lock)[^InstallingPyTorch3D]
   - *the installed dependencies should occupy ~6-7GB of disk space*
 
 ### Initial test run on a tiny example dataset
