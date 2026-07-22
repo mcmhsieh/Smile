@@ -14,6 +14,7 @@ import threading
 import queue
 import functools
 import http.server
+import time
 import json
 import requests
 import tkinter as tk
@@ -66,12 +67,21 @@ def start_pipeline_server():
     # For some reason, creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     # still creates a child process within the process tree.
     subprocess.Popen([PYTHON_EXE_PATH, PIPELINE_SERVER_FILEPATH])
+    start_time = time.time()
+    while True:
+        try:
+            get_queue_from_pipeline_server()
+            break
+        except requests.exceptions.ConnectionError:
+            assert time.time() < start_time + 30, 'timeout waiting for pipeline server to respond'
+            print('waiting for pipeline server to respond')
+            time.sleep(1)
 
 def post_to_pipeline_server(obj):
-    requests.post(f'http://{SERVER_NAME}:{SERVER_PORT}', data=json.dumps(obj))
+    requests.post(f'http://{SERVER_NAME}:{SERVER_PORT}', data=json.dumps(obj), timeout=10)
 
 def get_queue_from_pipeline_server():
-    r = requests.get(f'http://{SERVER_NAME}:{SERVER_PORT}')
+    r = requests.get(f'http://{SERVER_NAME}:{SERVER_PORT}', timeout=10)
     return r.json()
 
 class App(tk.Tk):
