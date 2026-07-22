@@ -2,7 +2,8 @@
 This is a personal research project to develop an automated tool that stitches sequences of intraoral images from a low cost dental camera into a synthetic panoramic view.
 
 Status: *Under Development*  
-Author: [Mark Hsieh](https://github.com/mcmhsieh)
+Author: [Mark Hsieh](https://github.com/mcmhsieh)  
+Licence: [MIT](LICENCE)
 
 ## Examples
 
@@ -35,8 +36,9 @@ Activate the virtual environment and run the stages of the pipeline in sequence 
     python.exe integrate_depth_images.py
     python.exe view_synthesis.py
 
-If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/example-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/example-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over ~5 minutes to complete depending on your system.   
-![Example synthesised view](docs/images/example-30frames-iso46to46-view_synthesis-output.jpg)
+If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/example-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/example-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over 7 minutes to complete depending on your system.
+
+<img src="docs/images/example-30frames-iso46to46-view_synthesis-output.jpg" alt="Example synthesised view" width="400px"/>
 
 ## Other example datasets
 
@@ -57,5 +59,7 @@ For example:
     python.exe compute_depth_images.py
     python.exe integrate_depth_images.py
     python.exe view_synthesis.py
+
+The entire pipeline sequence may take over 30 minutes to complete for either dataset depending on your system.
 
 Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pipeline selects the smallest dataset. After running the pipeline in the section [Initial test run on a tiny example dataset](#initial-test-run-on-a-tiny-example-dataset), the pipeline should have written `example-30frames-iso46to46` to `pipeline-workspace/working_subdir.txt`.
