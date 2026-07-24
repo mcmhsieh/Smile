@@ -9,10 +9,11 @@ Licence: [MIT](LICENSE)
 
 | Input frames | Generated output |
 | - | - |
-| <img src="docs/images/a401-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
-| <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
+| <img src="docs/images/a401-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
+| <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
+| <img src="docs/images/iy37-294frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="200px"/> | <img src="docs/images/iy37-294frames-iso34to37-view_synthesis-animated_output.webp" alt="Example synthetic panoramic view" width="200px"/> |
 
-See https://github.com/mcmhsieh/ANESOK-401-frame-recorder for information about the dental camera and recording of image sequences.
+See https://github.com/mcmhsieh/ANESOK-401-frame-recorder and https://github.com/mcmhsieh/iTiMO-Y37-frame-recorder for information about the dental cameras and recording of image sequences.
 
 ## Getting Started (Microsoft Windows)
 
@@ -46,6 +47,7 @@ If everything is installed and working correctly, the smallest (almost minimal) 
 The repository's `pipeline-input` subdirectory includes:
 - `a401-273frames-iso34to37`
 - `a401-351frames-iso45to35`
+- `iy37-294frames-iso34to37`
 
 To run the pipeline on a specific dataset, write the name of the subdirectory into a text file `pipeline-workspace/working_subdir.txt` in the cloned repository before running the pipeline.
 
@@ -61,7 +63,7 @@ For example:
     python.exe integrate_depth_images.py
     python.exe view_synthesis.py
 
-The entire pipeline sequence may take over 30 minutes to complete for either dataset depending on your system[^ExecutionTimes].
+The entire pipeline sequence may take well over 30 minutes to complete for any dataset depending on your system[^ExecutionTimes].
 
 Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pipeline selects the smallest dataset. After running the pipeline in the section [Initial test run on a tiny example dataset](#initial-test-run-on-a-tiny-example-dataset), the pipeline should have written `a401-30frames-iso46to46` to `pipeline-workspace/working_subdir.txt`.
 
@@ -69,4 +71,4 @@ Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pi
 
 [^InstallingPyTorch3D]: PyTorch3D has been included as a submodule because [installing](https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md) it as a package is not straightforward. It has [*"tight build time dependencies on versions of other packages"*](https://github.com/facebookresearch/pytorch3d/issues/1673) and [*"currently no metadata for the build are provided"*](https://github.com/facebookresearch/pytorch3d/issues/1419). Consequently [Poetry is unable to install PyTorch3D](https://github.com/python-poetry/poetry/issues/8574). All the [prebuilt wheels](https://github.com/facebookresearch/pytorch3d/issues/1401) and [conda packages](https://anaconda.org/pytorch3d/pytorch3d/files/manage) appear to be for linux and limited to Python versions below 3.11.
 
-[^ExecutionTimes]: Advisory execution times were measured on an ASUS TUF A15 FA506IU comprising AMD Ryzen 7 4800H, 32GB RAM, NVIDIA GeForce GTX 1660 Ti 6GB
+[^ExecutionTimes]: Indicative execution times were measured on an ASUS TUF A15 FA506IU comprising AMD Ryzen 7 4800H, 32GB RAM, NVIDIA GeForce GTX 1660 Ti 6GB
