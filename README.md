@@ -9,8 +9,8 @@ Licence: [MIT](LICENSE)
 
 | Input frames | Generated output |
 | - | - |
-| <img src="docs/images/example-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/example-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
-| <img src="docs/images/example-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/example-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
+| <img src="docs/images/a401-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
+| <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/>
 
 See https://github.com/mcmhsieh/ANESOK-401-frame-recorder for information about the dental camera and recording of image sequences.
 
@@ -37,22 +37,22 @@ Activate the virtual environment and run the stages of the pipeline in sequence 
     python.exe integrate_depth_images.py
     python.exe view_synthesis.py
 
-If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/example-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/example-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over 7 minutes to complete depending on your system[^ExecutionTimes].
+If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/a401-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/a401-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over 7 minutes to complete depending on your system[^ExecutionTimes].
 
-<img src="docs/images/example-30frames-iso46to46-view_synthesis-output.jpg" alt="Example synthesised view" width="400px"/>
+<img src="docs/images/a401-30frames-iso46to46-view_synthesis-output.jpg" alt="Example synthesised view" width="400px"/>
 
 ## Other example datasets
 
 The repository's `pipeline-input` subdirectory includes:
-- `example-273frames-iso34to37`
-- `example-351frames-iso45to35`
+- `a401-273frames-iso34to37`
+- `a401-351frames-iso45to35`
 
 To run the pipeline on a specific dataset, write the name of the subdirectory into a text file `pipeline-workspace/working_subdir.txt` in the cloned repository before running the pipeline.
 
 For example:
 
     cd smile
-    echo example-273frames-iso34to37> ..\pipeline-workspace\working_subdir.txt
+    echo a401-273frames-iso34to37> ..\pipeline-workspace\working_subdir.txt
     python.exe calc_sequential_flow_and_blur.py
     python.exe select_key_frames.py
     python.exe stitch_key_frames.py
@@ -63,7 +63,7 @@ For example:
 
 The entire pipeline sequence may take over 30 minutes to complete for either dataset depending on your system[^ExecutionTimes].
 
-Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pipeline selects the smallest dataset. After running the pipeline in the section [Initial test run on a tiny example dataset](#initial-test-run-on-a-tiny-example-dataset), the pipeline should have written `example-30frames-iso46to46` to `pipeline-workspace/working_subdir.txt`.
+Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pipeline selects the smallest dataset. After running the pipeline in the section [Initial test run on a tiny example dataset](#initial-test-run-on-a-tiny-example-dataset), the pipeline should have written `a401-30frames-iso46to46` to `pipeline-workspace/working_subdir.txt`.
 
 [^InstallingCudaRuntime]: There should be no need to separately install the CUDA runtime because it is already bundled with PyTorch
 
