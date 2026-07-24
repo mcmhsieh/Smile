@@ -22,6 +22,7 @@ import scipy
 import skimage
 import cv2
 import PIL
+import PIL.ImageOps
 
 import IPython
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
@@ -90,7 +91,7 @@ if __name__ == '__main__':
         if len(frame_indices) >= 2 and (frame_indices[-1][0] - frame_indices[-2][0]) % 256 != 1:
             print(f'Skipped from frame {frame_indices[-2][0]} to frame {frame_indices[-1][0]}')
 
-        image = PIL.Image.open(input_filepath)
+        image = PIL.ImageOps.exif_transpose(PIL.Image.open(input_filepath))
         exif = image.getexif()
         exif_subifd = exif.get_ifd(PIL.ExifTags.IFD.Exif)
 
