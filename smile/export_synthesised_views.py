@@ -13,6 +13,7 @@ import shutil
 import pickle
 
 import numpy as np
+import cv2
 import PIL
 import trimesh
 import open3d as o3d
@@ -119,50 +120,84 @@ if __name__ == '__main__':
             triangles = data['triangles']
             vertex_colors = data['vertex_colors']
 
+        canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
+        canvas_mesh.remove_vertices_by_mask(~np.all(np.isfinite(vertices), axis=1))
+        canvas_mesh.transform(synthetic_camera_extrinsic)
+
+        # Determine which mesh triangles require subdivision based on whether they map onto regions
+        # of the synthetic image containing any void pixels.
+        # Note that the synthetic image may include synthesised pixels outside the projected
+        # canvas mesh boundaries because view synthesis upsamples the mapping score arrays.
+
+        # TODO: Find area intersections of square tiles in a grid against triangles in a tessellation
+        # (Querying points on a higher resolution grid can miss intersections
+        # if triangles are small or have any acute angles)
+
         h, w = filtered_up_model_synthetic_frame_img.shape[:2]
 
-        material_image = np.array(filtered_up_model_synthetic_frame_img)
-        material_image[~np.isfinite(material_image)] = 127
-        material_image = np.clip(material_image, 0, 255).astype(np.uint8)
+        grid_scale = 8
+        hj, wj = h * grid_scale, w * grid_scale
 
-        canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
+        camera_intrinsic_scaled = np.block([[camera_intrinsic_synthetic[:2, :2] * grid_scale, (camera_intrinsic_synthetic[:2, 2:] + 0.5) * grid_scale - 0.5], [0, 0, 1]])
 
         scene = o3d.t.geometry.RaycastingScene()
         scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(canvas_mesh))
 
-        rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic_synthetic,
-                                                                  extrinsic_matrix=synthetic_camera_extrinsic,
-                                                                  width_px=w, height_px=h)
+        rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic_scaled,
+                                                                  extrinsic_matrix=np.identity(4),
+                                                                  width_px=wj, height_px=hj)
 
         casted_rays = scene.cast_rays(rays)
-        depth_img = casted_rays['t_hit'].numpy()
-        no_intersection_mask = ~np.isfinite(depth_img)
-        depth_img[no_intersection_mask] = np.nan
+        triangle_idxs = casted_rays['primitive_ids'].numpy()
 
-        depth_img[~np.all(np.isfinite(filtered_up_model_synthetic_frame_img), axis=-1)] = np.nan
+        # Each pixel occupies the square between [u-0.5, u+0.5] & [v-0.5, v+0.5]
+        # but the region in which it contribues to interpolation is [u-1, u+1] & [v-1, v+1]
+        mask_image = cv2.resize((~np.all(np.isfinite(filtered_up_model_synthetic_frame_img), axis=-1)).astype(np.uint8),
+                                (0, 0), fx=grid_scale, fy=grid_scale, interpolation=cv2.INTER_NEAREST)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (grid_scale + 1, grid_scale + 1))
+        mask = cv2.dilate(mask_image, kernel, iterations=1, borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
 
-        uv_grids = np.mgrid[0:h, 0:w][::-1]
-        uvs = np.vstack([uv.flatten() for uv in uv_grids])
-        uvcs = uvs - camera_intrinsic_synthetic[:2, 2:]
-        xys = np.linalg.inv(camera_intrinsic_synthetic[:2, :2]) @ uvcs
+        subdiv_triangle_idxs = set(np.unique(triangle_idxs[mask])) - set([o3d.t.geometry.RaycastingScene.INVALID_ID])
 
-        dense_vertices = np.vstack([xys, np.ones(xys.shape[1],)]) * depth_img.flatten()
+        mapped_canvas_mesh = o3d.geometry.TriangleMesh(canvas_mesh)
+        mapped_canvas_mesh.remove_triangles_by_index(list(subdiv_triangle_idxs))
+        mapped_canvas_mesh.remove_unreferenced_vertices()
 
-        # Anticlockwise ordering
-        vertex_idxs = uv_grids[0, :, :] + w * uv_grids[1, :, :]
-        upper_triangle_idxs = np.vstack([vertex_idxs[:-1, :-1].flatten(), vertex_idxs[1:, :-1].flatten(), vertex_idxs[:-1, 1:].flatten()])
-        lower_triangle_idxs = np.vstack([vertex_idxs[1:, 1:].flatten(), vertex_idxs[:-1, 1:].flatten(), vertex_idxs[1:, :-1].flatten()])
-        dense_triangle_idxs = np.hstack([upper_triangle_idxs, lower_triangle_idxs])
+        subdiv_canvas_mesh = o3d.geometry.TriangleMesh(canvas_mesh)
+        subdiv_canvas_mesh.remove_triangles_by_index(list(set(range(len(canvas_mesh.triangles))) - subdiv_triangle_idxs))
+        subdiv_canvas_mesh.remove_unreferenced_vertices()
 
-        # o3d.utility.Vector3dVector and o3d.utility.Vector3iVector are much slower for non C-contiguous input arrays
-        dense_canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(np.array(dense_vertices.T, order='C')),
-                                                      o3d.utility.Vector3iVector(np.array(dense_triangle_idxs.T, order='C')))
+        subdiv_canvas_mesh = subdiv_canvas_mesh.subdivide_midpoint(number_of_iterations=3)
 
-        valid_vertices = np.where(np.all(np.isfinite(np.array(dense_canvas_mesh.vertices)), axis=1))[0]
-        dense_canvas_mesh = dense_canvas_mesh.select_by_index(valid_vertices, cleanup=True)
 
-        projected_points = camera_intrinsic_synthetic @ np.array(dense_canvas_mesh.vertices).T
+        # Determine which subdivided mesh triangles map onto regions
+        # of the synthetic image containing any void pixels
+        scene = o3d.t.geometry.RaycastingScene()
+        scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(subdiv_canvas_mesh))
+
+        rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic_scaled,
+                                                                  extrinsic_matrix=np.identity(4),
+                                                                  width_px=wj, height_px=hj)
+
+        casted_rays = scene.cast_rays(rays)
+        triangle_idxs = casted_rays['primitive_ids'].numpy()
+        mask_triangle_idxs = set(np.unique(triangle_idxs[mask])) - set([o3d.t.geometry.RaycastingScene.INVALID_ID])
+
+        mapped_subdiv_canvas_mesh = o3d.geometry.TriangleMesh(subdiv_canvas_mesh)
+        mapped_subdiv_canvas_mesh.remove_triangles_by_index(list(mask_triangle_idxs))
+        mapped_subdiv_canvas_mesh.remove_unreferenced_vertices()
+
+
+        # Combine the original and subdivided triangles that map entirely onto regions
+        # of the synthetic image with no void pixels
+        trimmed_canvas_mesh = (mapped_canvas_mesh + mapped_subdiv_canvas_mesh).merge_close_vertices(eps=1e-3)
+
+        projected_points = camera_intrinsic_synthetic @ np.array(trimmed_canvas_mesh.vertices).T
         projected_points = projected_points[:2, :] / projected_points[2, :]
+
+        material_image = np.array(filtered_up_model_synthetic_frame_img)
+        material_image[~np.isfinite(material_image)] = 127
+        material_image = np.clip(material_image, 0, 255).astype(np.uint8)
 
         # baseColorTexture appears to be rendered with a fairly strong dependency on lighting and orientation
         # even if roughnessFactor = 1 and metallicFactor = 0, whereas emissiveTexture appears to be much less so.
@@ -181,8 +216,8 @@ if __name__ == '__main__':
         # uv origin is at bottom left of image for the GLB format
         uvs = np.vstack([(projected_points[0, :] + 0.5) / w, 1 - (projected_points[1, :] + 0.5) / h])
 
-        tri_mesh = trimesh.Trimesh(vertices=np.array(dense_canvas_mesh.vertices),
-                                   faces=np.array(dense_canvas_mesh.triangles),
+        tri_mesh = trimesh.Trimesh(vertices=np.array(trimmed_canvas_mesh.vertices),
+                                   faces=np.array(trimmed_canvas_mesh.triangles),
                                    visual=trimesh.visual.TextureVisuals(uv=uvs.T, material=pbr_material))
 
         tri_mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0]))
@@ -195,7 +230,7 @@ if __name__ == '__main__':
             # uv origin is at bottom left of image for the O3DVisualizer / Filament rendering engine
             uvs = np.vstack([(projected_points[0, :] + 0.5) / w, 1 - (projected_points[1, :] + 0.5) / h])
 
-            dense_canvas_mesh.triangle_uvs = o3d.utility.Vector2dVector(uvs[:, np.array(dense_canvas_mesh.triangles).flatten()].T)
+            trimmed_canvas_mesh.triangle_uvs = o3d.utility.Vector2dVector(uvs[:, np.array(trimmed_canvas_mesh.triangles).flatten()].T)
 
             material = o3d.visualization.rendering.MaterialRecord()
             material.shader = 'defaultUnlit'
@@ -221,7 +256,7 @@ if __name__ == '__main__':
             Gets stuck in an infinite loop when rerunning this module in IPython:
                 [Open3D WARNING] GLFW Error: The GLFW library is not initialized
             """
-            o3d.visualization.draw({'name': input_path.stem, 'geometry': dense_canvas_mesh, 'material': material},
+            o3d.visualization.draw({'name': input_path.stem, 'geometry': trimmed_canvas_mesh, 'material': material},
                                    width=1600, height=1200,
                                    lookat=[0, 0, 1], eye=[0, 0, 0], up=[0, -1, 0],
                                    show_skybox=False, show_ui=False,
@@ -230,54 +265,29 @@ if __name__ == '__main__':
         # uv origin is at top left of image for the legacy Visualizer
         uvs = np.vstack([(projected_points[0, :] + 0.5) / w, (projected_points[1, :] + 0.5) / h])
 
-        dense_canvas_mesh.triangle_uvs = o3d.utility.Vector2dVector(uvs[:, np.array(dense_canvas_mesh.triangles).flatten()].T)
+        trimmed_canvas_mesh.triangle_uvs = o3d.utility.Vector2dVector(uvs[:, np.array(trimmed_canvas_mesh.triangles).flatten()].T)
 
-        dense_canvas_mesh.triangle_material_ids = o3d.utility.IntVector(np.zeros((len(dense_canvas_mesh.triangles),), dtype=int))
-        dense_canvas_mesh.textures = [o3d.geometry.Image(material_image)]
+        trimmed_canvas_mesh.triangle_material_ids = o3d.utility.IntVector(np.zeros((len(trimmed_canvas_mesh.triangles),), dtype=int))
+        trimmed_canvas_mesh.textures = [o3d.geometry.Image(material_image)]
 
         if False:
             output_path = output_dirpath / (input_path.stem + '.o3d.glb')
             output_path.parent.mkdir(parents=True, exist_ok=True)
             # [Open3D WARNING] This file format does not support writing textures and uv coordinates. Consider using .obj
-            o3d.io.write_triangle_mesh(str(output_path), dense_canvas_mesh)
+            o3d.io.write_triangle_mesh(str(output_path), trimmed_canvas_mesh)
         if False:
             output_path = output_dirpath / (input_path.stem + '.o3d.obj')
             output_path.parent.mkdir(parents=True, exist_ok=True)
             # A .mtl material file is written separately to the .obj file
-            o3d.io.write_triangle_mesh(str(output_path), dense_canvas_mesh)
+            o3d.io.write_triangle_mesh(str(output_path), trimmed_canvas_mesh)
 
-        visualise_geometries([dense_canvas_mesh],
+        visualise_geometries([trimmed_canvas_mesh],
                              material_image.shape[1::-1],
                              camera_intrinsic_synthetic,
                              lookat=[0, 0, 8],
                              up=[0, -1, 0],
                              front=[0, 0, -8],
                              zoom=1.0)
-
-        if False:
-            # o3d.utility.Vector3dVector and o3d.utility.Vector3iVector are much slower for non C-contiguous input arrays
-            dense_canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(np.array(dense_vertices.T, order='C')),
-                                                          o3d.utility.Vector3iVector(np.array(dense_triangle_idxs.T, order='C')))
-
-            dense_canvas_mesh.vertex_colors = o3d.utility.Vector3dVector(filtered_up_model_synthetic_frame_img.reshape((-1, 3)) / 255)
-
-            valid_vertices = np.where(np.all(np.isfinite(np.array(dense_canvas_mesh.vertices)), axis=1))[0]
-            dense_canvas_mesh = dense_canvas_mesh.select_by_index(valid_vertices, cleanup=True)
-
-            dense_canvas_mesh_rotated = o3d.geometry.TriangleMesh(dense_canvas_mesh)
-            dense_canvas_mesh_rotated.rotate(dense_canvas_mesh_rotated.get_rotation_matrix_from_axis_angle([np.pi, 0, 0]), [0, 0, 0])
-
-            output_path = output_dirpath / (input_path.stem + '.o3d.glb')
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            o3d.io.write_triangle_mesh(str(output_path), dense_canvas_mesh_rotated)
-
-            visualise_geometries([dense_canvas_mesh],
-                                 material_image.shape[1::-1],
-                                 camera_intrinsic_synthetic,
-                                 lookat=[0, 0, 8],
-                                 up=[0, -1, 0],
-                                 front=[0, 0, -8],
-                                 zoom=1.0)
 
     # %%
 
