@@ -170,21 +170,27 @@ if __name__ == '__main__':
                 flow_displacements_and_motion_blurs[:, 0] = flow_displacements_and_motion_blurs[0, 0] - flow_displacements_and_motion_blurs[:, 0]
                 frame_idxs = -frame_idxs
 
-            # Select and position auxiliary frames by iteratively bisecting gaps between selected frames
+            # Select and position auxiliary frames by iteratively bisecting gaps between selected frames.
+            # Use flow displacements for indexing and marking gaps instead of frame indices or offsets
+            # because flow displacement does not strictly increase - it may flatten or decrease, and
+            # may also exceed the flow displacement bounds of the previous and next key frames.
+            # It is valid to select a bisecting frame with an in-between flow displacement, but not
+            # a correspondingly in-between frame order sequence.
             selected_frame_offsets = []
-            selected_gaps_flow_displacements = set()
+            sorted_flow_displacements = sorted(flow_displacements_and_motion_blurs[:, 0])
+            marked_gaps_flow_displacements = set(zip(sorted_flow_displacements[:-1], sorted_flow_displacements[1:]))
             targeted_flow_displacements = [0, flow_displacements_and_motion_blurs[-1, 0]]
 
             while True:
                 targeted_flow_displacement_gaps = np.diff(targeted_flow_displacements)
                 gap_idxs = [gap_idx for gap_idx in np.where(targeted_flow_displacement_gaps >= 48)[0]
-                            if tuple(targeted_flow_displacements[gap_idx:gap_idx+2]) not in selected_gaps_flow_displacements]
+                            if tuple(targeted_flow_displacements[gap_idx:gap_idx+2]) not in marked_gaps_flow_displacements]
                 if len(gap_idxs) == 0:
                     break
 
                 motion_blur_aux_frame_target = 0.5
                 targeted_gap_flow_displacements = tuple(targeted_flow_displacements[gap_idxs[0]:gap_idxs[0]+2])
-                selected_gaps_flow_displacements.add(targeted_gap_flow_displacements)
+                marked_gaps_flow_displacements.add(targeted_gap_flow_displacements)
                 target_flow_displacement = 0.5 * (targeted_gap_flow_displacements[1] - targeted_gap_flow_displacements[0])
 
                 def calc_flow_costs(flow_displacements, motion_blurs):
@@ -203,45 +209,46 @@ if __name__ == '__main__':
 
                 selected_frame_offset = np.argmin(flow_costs) + 1
 
-                assert selected_frame_offset not in selected_frame_offsets
-                selected_frame_offsets.append(selected_frame_offset)
+                if flow_costs[selected_frame_offset - 1] < 9:
+                    assert selected_frame_offset not in selected_frame_offsets
+                    selected_frame_offsets.append(selected_frame_offset)
 
-                targeted_flow_displacements.append(flow_displacements_and_motion_blurs[selected_frame_offset, 0])
-                targeted_flow_displacements.sort()
+                    targeted_flow_displacements.append(flow_displacements_and_motion_blurs[selected_frame_offset, 0])
+                    targeted_flow_displacements.sort()
 
-                selected_frame_idx = frame_idxs[selected_frame_offset]
+                    selected_frame_idx = frame_idxs[selected_frame_offset]
 
-                plt.figure('Flow costs', figsize=(16, 10))
-                setup_new_fig_page()
-                plt.suptitle('\n'.join(['Ref key frame: {} {}'.format(*frame_indices_seq[0]),
-                                        f'{direction} {target_flow_displacement}']))
-                ax = plt.subplot(3, 2, 1)
-                plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 0], 'o-')
-                plt.axvline(selected_frame_idx, linestyle='--', color='black')
-                #plt.ylim((0, plt.ylim()[1]))
-                plt.title('flow_displacements')
-                plt.subplot(3, 2, 3, sharex=ax)
-                plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 1], 'o-')
-                plt.axvline(selected_frame_idx, linestyle='--', color='black')
-                plt.ylim((0, plt.ylim()[1]))
-                plt.title('motion_blurs')
-                plt.subplot(3, 2, 5, sharex=ax)
-                plt.plot(frame_idxs[1:-1], flow_costs, 'o-')
-                plt.axvline(selected_frame_idx, linestyle='--', color='black')
-                plt.ylim((-0.5, 6.5))
-                plt.title('flow_costs')
-                ax = plt.subplot(1, 2, 2, projection='3d')
-                ax.plot(flow_displacements_and_motion_blurs[1:-1, 0], flow_displacements_and_motion_blurs[1:-1, 1], flow_costs, 'ko:')
-                flow_displacements_grid, motion_blurs_grid = np.meshgrid(np.arange(0.2, 180, 0.2), np.arange(0.01, 9, 0.01))
-                flow_costs_grid = calc_flow_costs(flow_displacements_grid, motion_blurs_grid)
-                ax.contour(flow_displacements_grid, motion_blurs_grid, flow_costs_grid, levels=np.arange(-0.1, 6.1, 0.1))
-                ax.set_zlim((-0.5, 6.5))
-                ax.set_xlabel('flow_displacements')
-                ax.set_ylabel('motion_blurs')
-                ax.set_zlabel('flow_costs')
-                ax.view_init(elev=80, azim=-90, roll=0)
-                plt.tight_layout()
-                stash_fig_page()
+                    plt.figure('Flow costs', figsize=(16, 10))
+                    setup_new_fig_page()
+                    plt.suptitle('\n'.join(['Ref key frame: {} {}'.format(*frame_indices_seq[0]),
+                                            f'{direction} {target_flow_displacement}']))
+                    ax = plt.subplot(3, 2, 1)
+                    plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 0], 'o-')
+                    plt.axvline(selected_frame_idx, linestyle='--', color='black')
+                    #plt.ylim((0, plt.ylim()[1]))
+                    plt.title('flow_displacements')
+                    plt.subplot(3, 2, 3, sharex=ax)
+                    plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 1], 'o-')
+                    plt.axvline(selected_frame_idx, linestyle='--', color='black')
+                    plt.ylim((0, plt.ylim()[1]))
+                    plt.title('motion_blurs')
+                    plt.subplot(3, 2, 5, sharex=ax)
+                    plt.plot(frame_idxs[1:-1], flow_costs, 'o-')
+                    plt.axvline(selected_frame_idx, linestyle='--', color='black')
+                    plt.ylim((-0.5, 6.5))
+                    plt.title('flow_costs')
+                    ax = plt.subplot(1, 2, 2, projection='3d')
+                    ax.plot(flow_displacements_and_motion_blurs[1:-1, 0], flow_displacements_and_motion_blurs[1:-1, 1], flow_costs, 'ko:')
+                    flow_displacements_grid, motion_blurs_grid = np.meshgrid(np.arange(0.2, 180, 0.2), np.arange(0.01, 9, 0.01))
+                    flow_costs_grid = calc_flow_costs(flow_displacements_grid, motion_blurs_grid)
+                    ax.contour(flow_displacements_grid, motion_blurs_grid, flow_costs_grid, levels=np.arange(-0.1, 6.1, 0.1))
+                    ax.set_zlim((-0.5, 6.5))
+                    ax.set_xlabel('flow_displacements')
+                    ax.set_ylabel('motion_blurs')
+                    ax.set_zlabel('flow_costs')
+                    ax.view_init(elev=80, azim=-90, roll=0)
+                    plt.tight_layout()
+                    stash_fig_page()
 
             for selected_frame_offset in sorted(selected_frame_offsets, reverse=(direction == 'reverse')):
                 selected_inter_key_aux_frames[frame_indices_seq[0]].append(frame_indices_seq[selected_frame_offset])

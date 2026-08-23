@@ -900,8 +900,12 @@ if __name__ == '__main__':
             scene = o3d.t.geometry.RaycastingScene()
             scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(integrated_weighted_canvas_meshes[ref_frame_idx]))
 
+            # Rays that exactly intersect vertices or edges may not register a raycasting hit due to floating point precision.
+            # In such cases, t_hit values are returned as NaN. Workaround by adding ray jitter / offset.
+            # TODO: Use multiple ray sampling
+            extrinsic_matrix = np.block([[np.identity(3), np.full((3, 1), fill_value=1e-6)], [0, 0, 0, 1]]) @ camera_extrinsic
             rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic,
-                                                                      extrinsic_matrix=camera_extrinsic,
+                                                                      extrinsic_matrix=extrinsic_matrix,
                                                                       width_px=w, height_px=h)
 
             casted_rays = scene.cast_rays(rays)
@@ -1482,10 +1486,9 @@ if __name__ == '__main__':
 
     def loss_fn(temperature):
         target_frame_activations = torch.nn.functional.sigmoid(model_target_frames)
-        prob_target_frame_activations = torch.nn.functional.softmax(target_frame_activations, dim=0)
         loss_components = {}
 
-        threshold = 0.9
+        #threshold = 0.9
         #target_frame_exclusions = 1 / (1 + torch.pow(target_frame_activations[:, None] * model_interframe_support / (threshold / 3), 2))
         #target_frame_exclusions = torch.exp(-0.5 * torch.pow(target_frame_activations[:, None] * model_interframe_support / (threshold / 3), 2))
         #loss_components['exclusion'] = 1 / torch.mean(1 / target_frame_exclusions, dim=0)
@@ -1494,14 +1497,22 @@ if __name__ == '__main__':
         exp_factor = 100
         activated_frame_support = (torch.logsumexp(exp_factor * target_frame_activations[:, None] * model_interframe_support, dim=0) - np.log(target_frame_activations.shape[0])) / exp_factor
         #loss_components['exclusion'] = torch.exp(-0.5 * torch.pow(activated_frame_support / (threshold / 3), 2))
-        loss_components['exclusion'] = torch.exp(-3.0 * activated_frame_support / threshold) * model_frame_synth_projection_weights
+        loss_components['exclusion'] = torch.exp(-3.0 * activated_frame_support) * model_frame_synth_projection_weights
 
-        loss_components['activations'] = 10.0 * np.exp(-3.0 * temperature) * target_frame_activations * torch.exp(-3.0 * model_frame_synth_projection_weights)
+        # Activation loss is low if either
+        # - the frame is not active (target_frame_activations is low), or
+        # - model_frame_synth_projection_weights is high when the frame is active (target_frame_activations is high)
+        loss_components['activations'] = 5.0 * (1 - temperature) * target_frame_activations * torch.exp(-1.5 * model_frame_synth_projection_weights)
 
-        # Divide by np.log(prob_target_frame_activations.shape[0]) to calculate the entropy relative to that of a uniform distribution
-        loss_components['entropy'] = 1.0 * -torch.sum(torch.log(torch.clamp(prob_target_frame_activations, min=1e-4)) * prob_target_frame_activations) / np.log(prob_target_frame_activations.shape[0])
+        if False:
+            sigma = 0.1
+            x = torch.arange(-3.5 * sigma, 1 + 3.5 * sigma + 1e-6, 0.01)[:, None]
+            p_x = torch.sum(torch.exp(-0.5 * torch.pow((target_frame_activations - x) / sigma, 2)), dim=1)
+            p_x = p_x / torch.clamp(torch.sum(p_x), min=1e-4)
+            # Divide by np.log(x.shape[0]) to calculate the entropy relative to that of a uniform distribution
+            loss_components['entropy'] = 0.1 * (1 - temperature) * -torch.sum(torch.log(torch.clamp(p_x, min=1e-4)) * p_x) / np.log(x.shape[0])
 
-        loss_components['information'] = 0.5 * torch.log(1 + 10 * torch.mean(target_frame_activations))
+        loss_components['information'] = 0.1 * (1 - temperature) * torch.log(1 + 100 * torch.mean(target_frame_activations))
 
         return sum(torch.mean(loss_component) for loss_component in loss_components.values()), loss_components
 
@@ -1588,20 +1599,20 @@ if __name__ == '__main__':
     plt.plot(target_frame_activations)
     plt.title('target_frame_activations')
     plt.subplot(2, 2, 2, sharex=ax)
-    plt.plot(loss_components['exclusion'].numpy(force=True))
+    for target_frame_idx in target_frame_idxs:
+        plt.plot(interframe_support[target_frame_idx, :], label=target_frame_idx)
     plt.ylim((-0.05, 1.05))
-    plt.title('frame exclusion loss')
+    plt.legend()
+    plt.title('interframe_support[target_frame_idxs]')
     plt.subplot(2, 2, 3, sharex=ax)
     plt.plot(frame_synth_projection_weights)
     plt.plot(target_frame_idxs, frame_synth_projection_weights[target_frame_idxs], 'o')
     plt.ylim((-0.05, 1.05))
     plt.title('frame_synth_projection_weights')
     plt.subplot(2, 2, 4, sharex=ax)
-    for target_frame_idx in target_frame_idxs:
-        plt.plot(interframe_support[target_frame_idx, :], label=target_frame_idx)
+    plt.plot(loss_components['exclusion'].numpy(force=True))
     plt.ylim((-0.05, 1.05))
-    plt.legend()
-    plt.title('interframe_support[target_frame_idxs]')
+    plt.title('frame exclusion loss')
     plt.tight_layout()
 
     # %%

@@ -16,6 +16,7 @@ import datetime
 import pathlib
 import shutil
 import pickle
+import json
 
 import numpy as np
 import scipy
@@ -136,10 +137,12 @@ if __name__ == '__main__':
 
     if make_model == ('YPC', 'TX806-XRH-401'):
         # u = fx*X/Z + cx, v = fy*Y/Z + cy
-        # at Z~10mm, the height of view is ~10mm,
+        # at Z~10mm, the 360px height of the view is ~10mm,
         # i.e. 360 = fy * 10 / 10
         # so, the angle of view is ~83° horizontally and ~53° degrees vertically (2 * arctan([320, 180] / 360))
-        w, h = 0.5 * np.array(image_size)
+        assert image_size[0] % 2 == 0 and image_size[1] % 2 == 0
+        resized_image_size = image_size[0] // 2, image_size[1] // 2
+        w, h = resized_image_size
         camera_matrix = np.array([[360, 0,   (w - 1) / 2],
                                   [0,   360, (h - 1) / 2],
                                   [0,   0,   1]], dtype=np.float32)
@@ -148,7 +151,8 @@ if __name__ == '__main__':
         # at Z~15mm, the 480px width of the view ~23mm
         # i.e. 480 = fx * 23 / 15
         # so, the angle of view is ~75° horizontally and ~91° degrees vertically (2 * arctan([240, 320] / 315))
-        w, h = image_size
+        resized_image_size = image_size
+        w, h = resized_image_size
         camera_matrix = np.array([[315, 0,   (w - 1) / 2],
                                   [0,   315, (h - 1) / 2],
                                   [0,   0,   1]], dtype=np.float32)
@@ -158,8 +162,35 @@ if __name__ == '__main__':
     with open(output_path, 'wb') as pickle_file:
         pickle.dump({'make_model': make_model,
                      'image_size': image_size,
+                     'resized_image_size': resized_image_size,
                      'camera_matrix': camera_matrix},
                     pickle_file)
+
+    # %%
+
+    undistort_params_json = """{"cameraMatrix": [[315.0, 0.0, 274.23481258710376], [0.0, 315.0, 297.55316870900424], [0.0, 0.0, 1.0]],
+                                "distCoeffs": [[0.03504473236937664, 0.18387314261095278, 0.0, 0.0, 0.013485540082224235, -0.007180951148317086, 0.20023798541961774, 0.017328421521990087, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+                                "newCameraMatrix": [[321.2154556105719, 0.0, 274.2346478179097], [0.0, 321.2154556105719, 297.21078826487064], [0.0, 0.0, 1.0]],
+                                "size": [480, 640]}"""
+    undistort_params = {key: np.array(value) for key, value in json.loads(undistort_params_json).items()}
+
+    # https://docs.opencv.org/4.10.0/d9/d0c/group__calib3d.html#ga7dfb72c9cf9780a347fbe3d1c47e5d5a
+    # R: Optional rectification transformation in the object space (3x3 matrix).
+    #    R1 or R2, computed by #stereoRectify can be passed here.
+    #    If the matrix is empty, the identity transformation is assumed.
+    #    In #initUndistortRectifyMap R assumed to be an identity matrix.
+    undistort_map, _ = cv2.initUndistortRectifyMap(**undistort_params, R=None, m1type=cv2.CV_32FC2)
+
+    undistort_maps = {('MoLink Technology', 'iTiMO-0877'): undistort_map}
+
+    # %%
+
+    cxy = np.array([244.47356419, 319.6843304])
+
+    yfg, xfg = np.mgrid[:h, :w]
+    illumination_ratio = (np.sum(np.power((np.stack([xfg, yfg], axis=-1) - cxy) / np.diag(camera_matrix)[:2], 2), axis=-1) + 1)
+
+    illumination_ratios = {('MoLink Technology', 'iTiMO-0877'): illumination_ratio}
 
     # %%
 
@@ -182,23 +213,17 @@ if __name__ == '__main__':
 
         # Filter JPEG compression artifacts
         # smallest resolvable object is approximately 5x5 pixels for YPC TX806-XRH-401 1280x720 images
-        if make_model == ('YPC', 'TX806-XRH-401'):
-            ksize = (7, 7)
-            image = np.clip(cv2.GaussianBlur(image.astype(np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
-                            / cv2.GaussianBlur(np.ones(image.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT), 0, 255).astype(np.uint8)
-            image = cv2.resize(image, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_NEAREST)
-        else:
-            ksize = (5, 5)
-            image = np.clip(cv2.GaussianBlur(image.astype(np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
-                            / cv2.GaussianBlur(np.ones(image.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT), 0, 255).astype(np.uint8)
+        if make_model == ('MoLink Technology', 'iTiMO-0877'):
+            image = cv2.resize(image, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        ksize = (7, 7)
+        image = np.clip(cv2.GaussianBlur(image.astype(np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
+                        / cv2.GaussianBlur(np.ones(image.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT), 0, 255).astype(np.uint8)
+        image = cv2.resize(image, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_LINEAR)
+
+        if make_model in undistort_maps:
+            image = cv2.remap(image, undistort_maps[make_model], None, cv2.INTER_LINEAR)
+
         assert np.allclose(image.shape[1::-1], (camera_matrix[:2, 2] + 0.5) * 2)
-
-        frame_images[(frame_index, frame_time)] = np.array(image)
-
-        filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.resized.png'
-        output_path = output_dirpath / filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR), params=[cv2.IMWRITE_PNG_COMPRESSION, 1])
 
         # Mask and inpaint specular reflection
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(7, 7))
@@ -219,18 +244,12 @@ if __name__ == '__main__':
         gray_padded = cv2.copyMakeBorder(np.mean(image, axis=-1), top=pad_width, bottom=pad_width, left=pad_width, right=pad_width, borderType=cv2.BORDER_REPLICATE)
         gray_closed = cv2.morphologyEx(gray_padded, op=cv2.MORPH_CLOSE, kernel=kernel, iterations=1, borderType=cv2.BORDER_REPLICATE)
         gray_closed = gray_closed[pad_width:-pad_width, pad_width:-pad_width]
-        mask_abs = skimage.filters.apply_hysteresis_threshold(gray_closed, low=232, high=248)
+        specular_low_high_thresholds = {'low': 232, 'high': 248}
+        mask_abs = skimage.filters.apply_hysteresis_threshold(gray_closed, **specular_low_high_thresholds)
 
         mask_img = cv2.morphologyEx((mask_abs | mask_rel).astype(np.uint8), op=cv2.MORPH_DILATE, kernel=kernel, iterations=1, borderType=cv2.BORDER_REPLICATE)
         img_mask = mask_img.astype(bool)
         mask_img[img_mask] = 255
-
-        image_masks[(frame_index, frame_time)] = img_mask
-
-        filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.mask.png'
-        output_path = output_dirpath / filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(output_path, mask_img, params=[cv2.IMWRITE_PNG_COMPRESSION, 1])
 
         inpainted_img = cv2.inpaint(image, inpaintMask=mask_img, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
 
@@ -242,7 +261,40 @@ if __name__ == '__main__':
         if len(filtered_images) == 0:
             print(f'filtered image shape {filtered_inpainted_img.shape}')
 
+        if make_model in illumination_ratios:
+            illumination_ratio = illumination_ratios[make_model]
+            overcompensation = (np.max(filtered_inpainted_img, axis=-1).astype(np.float32) * illumination_ratio
+                                / (specular_low_high_thresholds['low'] / np.sqrt(illumination_ratio)))
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize=(9, 9))
+            kernel = kernel | kernel.T
+            overcompensation = cv2.resize(cv2.morphologyEx(overcompensation, op=cv2.MORPH_DILATE, kernel=kernel, iterations=1, borderType=cv2.BORDER_REPLICATE),
+                                          (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_LINEAR)
+            overcompensation = cv2.morphologyEx(overcompensation, op=cv2.MORPH_DILATE, kernel=kernel, iterations=4, borderType=cv2.BORDER_REPLICATE)
+
+            ksize = (75, 75)
+            overcompensation = (cv2.GaussianBlur(overcompensation, ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
+                                / cv2.GaussianBlur(np.ones(overcompensation.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT))
+            overcompensation = cv2.resize(overcompensation, (0, 0), fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
+
+            illumination_ratio = illumination_ratio / np.maximum(1, overcompensation)
+
+            image = np.clip(np.round(image.astype(np.float32) * illumination_ratio[:, :, None]), 0, 255).astype(np.uint8)
+            filtered_inpainted_img = np.clip(np.round(filtered_inpainted_img.astype(np.float32) * illumination_ratio[:, :, None]), 0, 255).astype(np.uint8)
+
+        frame_images[(frame_index, frame_time)] = image
+        image_masks[(frame_index, frame_time)] = img_mask
         filtered_images[(frame_index, frame_time)] = filtered_inpainted_img
+
+        filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.resized.png'
+        output_path = output_dirpath / filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR), params=[cv2.IMWRITE_PNG_COMPRESSION, 1])
+
+        filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.mask.png'
+        output_path = output_dirpath / filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(output_path, mask_img, params=[cv2.IMWRITE_PNG_COMPRESSION, 1])
 
         filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.filtered.png'
         output_path = output_dirpath / filename
@@ -273,12 +325,27 @@ if __name__ == '__main__':
         # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
         #             for the polynomial expansion;
         #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
-        flow = cv2.calcOpticalFlowFarneback(prev=cv2.resize(prev_gray, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA),
-                                            next=cv2.resize(gray, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA),
-                                            flow=None,
-                                            pyr_scale=0.5, levels=3, winsize=51, iterations=3,
-                                            poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-        flow = cv2.resize(flow, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_NEAREST) * 2
+        # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
+        #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
+        zoom = 0.5
+        pyr_scale = 0.5
+        levels = 3
+        core_zoom_img_shape = np.ceil(zoom * pyr_scale ** levels * np.array(img.shape[:2]))
+        core_zoom_y, core_zoom_x = core_zoom_img_shape / np.array(img.shape[:2])
+        core_flow = cv2.calcOpticalFlowFarneback(prev=cv2.resize(img_to_normed_gray(prev_img, ksize=(251, 251)),
+                                                                 (0, 0), fx=core_zoom_x, fy=core_zoom_y, interpolation=cv2.INTER_AREA),
+                                                 next=cv2.resize(img_to_normed_gray(img, ksize=(251, 251)),
+                                                                 (0, 0), fx=core_zoom_x, fy=core_zoom_y, interpolation=cv2.INTER_AREA),
+                                                 flow=None,
+                                                 pyr_scale=pyr_scale, levels=1, winsize=51, iterations=3,
+                                                 poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
+        core_flow = cv2.resize(core_flow, (0, 0), fx=zoom/core_zoom_x, fy=zoom/core_zoom_y, interpolation=cv2.INTER_LINEAR) * zoom / np.array([core_zoom_x, core_zoom_y])
+        flow = cv2.calcOpticalFlowFarneback(prev=cv2.resize(prev_gray, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
+                                            next=cv2.resize(gray, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
+                                            flow=core_flow.astype(np.float32),
+                                            pyr_scale=pyr_scale, levels=levels, winsize=51, iterations=3,
+                                            poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN+cv2.OPTFLOW_USE_INITIAL_FLOW)
+        flow = cv2.resize(flow, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_LINEAR) / zoom
 
         flow_maps[(prev_img_indices, next_img_indices)] = flow
 

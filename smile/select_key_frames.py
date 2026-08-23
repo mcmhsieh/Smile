@@ -131,12 +131,21 @@ if __name__ == '__main__':
 
     # Key frames for pose estimation ideally have low motion blur, low flow distortion
     # and useful translation displacement from the previous key frame.
-    # For a change in depth Δd = 1mm at a depth z = 15mm, with a baseline of b and fx = 360
+
+    # For a change in depth Δz = 1mm at a depth z = 15mm, with a baseline of b and fx = 360
     # the change in disparity Δu = b * fx * (1 / z - 1 / (z + Δz)) = 1.5 * b
     # Considering disparity_map_zoom = 0.125 and 0.25 for stitching and view synthesis,
     # for Δu in range [4, 8] then b = [2.667mm, 5.333mm]
     # With the target object at z = 15mm, [2.667mm, 5.333mm] of relative translation is visible as
     # [2.667, 5.333] / 15 * 360 = [64 pixels, 128 pixels] of flow displacement
+
+    # For a change in depth Δz = 1mm at a depth z = 15mm, with a baseline of b and fx = 315
+    # the change in disparity Δu = b * fx * (1 / z - 1 / (z + Δz)) = 1.3125 * b
+    # Considering disparity_map_zoom = 0.125 and 0.25 for stitching and view synthesis,
+    # for Δu in range [4, 8] then b = [3.048mm, 6.095mm]
+    # With the target object at z = 15mm, [3.048mm, 6.095mm] of relative translation is visible as
+    # [3.048, 6.095] / 15 * 315 = [64 pixels, 128 pixels] of flow displacement
+
     # TODO: consider selecting key frames to optimise disparity computation?
 
     # The flow costs model profile possesses the following characteristics:
@@ -473,12 +482,14 @@ if __name__ == '__main__':
                     # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
                     #             for the polynomial expansion;
                     #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
+                    # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
+                    #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
                     flow_warp = cv2.calcOpticalFlowFarneback(prev=cv2.resize(ref_gray_masked, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA),
                                                              next=cv2.resize(gray_warp, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA),
                                                              flow=None,
                                                              pyr_scale=0.5, levels=3, winsize=51, iterations=3,
                                                              poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                    flow_warp = cv2.resize(flow_warp, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_NEAREST) * 2
+                    flow_warp = cv2.resize(flow_warp, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR) * 2
 
                     flow_fp = flow_warp[yfp, xfp]
                     interp = scipy.interpolate.RegularGridInterpolator((np.arange(xyfn_flow.shape[0]), np.arange(xyfn_flow.shape[1])),

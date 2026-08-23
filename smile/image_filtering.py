@@ -18,13 +18,12 @@ def rgb_to_gray(img, dtype=np.uint8):
         gray = np.round(gray)
     return gray.astype(dtype)
 
-def img_to_normed_gray(img):
+def img_to_normed_gray(img, ksize=(51, 51)):
     gray = rgb_to_gray(img, dtype=np.float32)
-    ksize = (7, 7)
-    gray = (cv2.GaussianBlur(gray, ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
-            / cv2.GaussianBlur(np.ones(gray.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT))
+    ksize_blur = (7, 7)
+    gray = (cv2.GaussianBlur(gray, ksize_blur, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
+            / cv2.GaussianBlur(np.ones(gray.shape, dtype=np.float32), ksize_blur, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT))
 
-    ksize = (51, 51)
     ones_lp = cv2.GaussianBlur(np.ones(gray.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT)
     gray_lp = cv2.GaussianBlur(gray, ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT) / ones_lp
     gray2_lp = cv2.GaussianBlur(np.power(gray, 2), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT) / ones_lp

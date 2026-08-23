@@ -1723,6 +1723,8 @@ if __name__ == '__main__':
                 # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
                 #             for the polynomial expansion;
                 #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
+                # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
+                #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
                 zoom = 0.25
                 cross_flow = cv2.calcOpticalFlowFarneback(prev=cv2.resize(ref_gray_ext_attenuated, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
                                                           next=cv2.resize(gray_warp, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
@@ -1736,8 +1738,8 @@ if __name__ == '__main__':
                                                           # winsize=25 with zoom = 0.25 translates to a Gaussian window size of 100
                                                           # which means that each iteration takes into account up to 100 / 2 = 50 pixels
                                                           # in range at the base of the pyramid when calculating the weighted average of A.T @ A terms.
-                                                          # Then accounting for pyr_scale ** levels, for pyr_scale=0.75, levels=5
-                                                          # 50 / (0.75**5) = 210.7 pixels of range at the top of the pyramid
+                                                          # Then accounting for pyr_scale ** (levels - 1), for pyr_scale=0.75, levels=5
+                                                          # 50 / (0.75**5) = 158.0 pixels of range at the top of the pyramid
                                                           pyr_scale=0.75, levels=5, winsize=25, iterations=30,
                                                           poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
                 if False:
@@ -1750,7 +1752,7 @@ if __name__ == '__main__':
                                                               #poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
                                                               pyr_scale=0.95, levels=30, winsize=13, iterations=30,
                                                               poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN+cv2.OPTFLOW_USE_INITIAL_FLOW)
-                cross_flow = cv2.resize(cross_flow, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_NEAREST) / zoom
+                cross_flow = cv2.resize(cross_flow, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_LINEAR) / zoom
 
                 cross_flow_map = (np.transpose(uv_grid, axes=(1, 2, 0)) + cross_flow).astype(np.float32)
                 gray_cross_warp = cv2.remap(gray_warp,
@@ -1766,6 +1768,8 @@ if __name__ == '__main__':
                 # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
                 #             for the polynomial expansion;
                 #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
+                # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
+                #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
                 zoom = 0.25
                 cross_flow_warp = cv2.calcOpticalFlowFarneback(prev=cv2.resize(gray_warp, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
                                                                next=cv2.resize(ref_gray_ext_attenuated, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
@@ -1773,11 +1777,11 @@ if __name__ == '__main__':
                                                                # winsize=25 with zoom = 0.25 translates to a Gaussian window size of 100
                                                                # which means that each iteration takes into account up to 100 / 2 = 50 pixels
                                                                # in range at the base of the pyramid when calculating the weighted average of A.T @ A terms.
-                                                               # Then accounting for pyr_scale ** levels, for pyr_scale=0.75, levels=5
-                                                               # 50 / (0.75**5) = 210.7 pixels of range at the top of the pyramid
+                                                               # Then accounting for pyr_scale ** (levels - 1), for pyr_scale=0.75, levels=5
+                                                               # 50 / (0.75**5) = 158.0 pixels of range at the top of the pyramid
                                                                pyr_scale=0.75, levels=5, winsize=25, iterations=30,
                                                                poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                cross_flow_warp = cv2.resize(cross_flow_warp, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_NEAREST) / zoom
+                cross_flow_warp = cv2.resize(cross_flow_warp, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_LINEAR) / zoom
 
                 cross_flow_warp_map = (np.transpose(uv_grid, axes=(1, 2, 0)) + cross_flow_warp).astype(np.float32)
                 ref_gray_cross_warp = cv2.remap(ref_gray_ext_attenuated,
@@ -3329,12 +3333,14 @@ if __name__ == '__main__':
                     # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
                     #             for the polynomial expansion;
                     #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
+                    # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
+                    #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
                     cross_flow_warp = cv2.calcOpticalFlowFarneback(prev=cv2.resize(ref_gray_masked, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA),
                                                                    next=cv2.resize(gray_warp, (0, 0), fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA),
                                                                    flow=None,
                                                                    pyr_scale=0.5, levels=2, winsize=101, iterations=2,
                                                                    poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                    cross_flow_warp = cv2.resize(cross_flow_warp, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_NEAREST) * 2
+                    cross_flow_warp = cv2.resize(cross_flow_warp, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR) * 2
 
                     cross_flow_fp = cross_flow_warp[yfp, xfp]
                     interp = scipy.interpolate.RegularGridInterpolator((np.arange(cross_flow.shape[0]), np.arange(cross_flow.shape[1])),

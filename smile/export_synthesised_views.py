@@ -143,6 +143,9 @@ if __name__ == '__main__':
         scene = o3d.t.geometry.RaycastingScene()
         scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(canvas_mesh))
 
+        # Rays that exactly intersect vertices or edges may not register a raycasting hit due to floating point precision.
+        # However in this case, since void pixels at the edge of any triangle have minimal impact on rendering,
+        # there is no need to rectify this.
         rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic_scaled,
                                                                   extrinsic_matrix=np.identity(4),
                                                                   width_px=wj, height_px=hj)
@@ -151,7 +154,7 @@ if __name__ == '__main__':
         triangle_idxs = casted_rays['primitive_ids'].numpy()
 
         # Each pixel occupies the square between [u-0.5, u+0.5] & [v-0.5, v+0.5]
-        # but the region in which it contribues to interpolation is [u-1, u+1] & [v-1, v+1]
+        # but the region in which it contributes to interpolation is [u-1, u+1] & [v-1, v+1]
         mask_image = cv2.resize((~np.all(np.isfinite(filtered_up_model_synthetic_frame_img), axis=-1)).astype(np.uint8),
                                 (0, 0), fx=grid_scale, fy=grid_scale, interpolation=cv2.INTER_NEAREST)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (grid_scale + 1, grid_scale + 1))
@@ -175,6 +178,9 @@ if __name__ == '__main__':
         scene = o3d.t.geometry.RaycastingScene()
         scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(subdiv_canvas_mesh))
 
+        # Rays that exactly intersect vertices or edges may not register a raycasting hit due to floating point precision.
+        # However in this case, since void pixels at the edge of any triangle have minimal impact on rendering,
+        # there is no need to rectify this.
         rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic_scaled,
                                                                   extrinsic_matrix=np.identity(4),
                                                                   width_px=wj, height_px=hj)
