@@ -11,6 +11,7 @@ import time
 import pathlib
 import shutil
 import pickle
+import base64
 
 import numpy as np
 import cv2
@@ -228,9 +229,73 @@ if __name__ == '__main__':
 
         tri_mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0]))
 
+
+        if False:
+            # TODO: Determine why three.js renders the emissive texture so darkly
+            import trimesh.viewer
+
+            trimesh_camera = trimesh.scene.cameras.Camera(name='camera', resolution=material_image.shape[:2],
+                                                          focal=np.diag(camera_intrinsic_synthetic)[:2])
+            trimesh_scene = trimesh.Scene(geometry=[tri_mesh],  camera=trimesh_camera)
+
+            output_path = output_dirpath / (input_path.stem + '.trimesh.scene.html')
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w') as html_file:
+                html_file.write(trimesh.viewer.notebook.scene_to_html(trimesh_scene))
+
+
         output_path = output_dirpath / (input_path.stem + '.trimesh.glb')
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        tri_mesh.export(str(output_path))
+        tri_mesh_glb_data = tri_mesh.export(str(output_path))
+
+        # https://doc.babylonjs.com/features/featuresDeepDive/babylonViewer/
+        html = r"""
+          <html>
+            <head>
+              <title>Babylon Viewer</title>
+              <meta charset="UTF-8"/>
+              <script type="module" src="https://cdn.jsdelivr.net/npm/@babylonjs/viewer@9.22.2/dist/babylon-viewer.esm.min.js"></script>
+              <style>
+                html, body { width: 100%; height: 100%; padding: 0; margin: 0; overflow: hidden; }
+                body { background: repeating-conic-gradient(#d2d2d2 0% 25%, white 0% 50%) 50% / 16px 16px }
+              </style>
+            </head>
+            <body>
+              <babylon-viewer source="data:;base64,&&B64_GLB_DATA&&"
+                camera-orbit="1.571 1.571 20" camera-target="0 0 -10">
+              </babylon-viewer>
+              <script>
+                const viewerElement = document.querySelector("babylon-viewer");
+                viewerElement.addEventListener("viewerready", () => {
+                  const scene = viewerElement.viewerDetails.scene;
+                  const camera = viewerElement.viewerDetails.camera;
+                  camera.fov = 80 / 180 * 3.142;
+                  var frameTime = 0;
+                  function cameraOrbit(frameTime) {
+                    const r = (0.5 + 9.5 / (1 + Math.exp(-(frameTime - 40) / 30 * 6))) / 180 * 3.142;
+                    const angle = frameTime * 2 * 3.142 / 20;
+                    return [r * Math.sin(angle), r * Math.cos(angle)];
+                  }
+                  viewerElement.addEventListener("click", (event) => {
+                    frameTime = 0;
+                  });
+                  scene.onBeforeRenderObservable.add(() => {
+                    const deltaTime = 1e-3 * scene.getEngine().getDeltaTime();
+                    camera.alpha += cameraOrbit(frameTime + deltaTime)[0] - cameraOrbit(frameTime)[0];
+                    camera.beta += cameraOrbit(frameTime + deltaTime)[1] - cameraOrbit(frameTime)[1];
+                    frameTime += deltaTime;
+                  });
+                });
+              </script>
+            </body>
+          </html>
+        """.replace('&&B64_GLB_DATA&&', base64.b64encode(tri_mesh_glb_data).decode('utf-8'))
+
+        output_path = output_dirpath / (input_path.stem + '.trimesh.html')
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w') as html_file:
+            html_file.write(html)
+
 
         if False:
             # uv origin is at bottom left of image for the O3DVisualizer / Filament rendering engine
