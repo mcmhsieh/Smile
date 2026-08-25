@@ -51,6 +51,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             del self.server.pipeline_queue[workspace_stage]
             if len(self.server.pipeline_queue) == 0:
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
+                self.server.window.schedule_destroy()
         self.server.window.schedule_update(self.server.pipeline_queue)
         self.send_response(200)
         self.end_headers()
@@ -60,7 +61,7 @@ def httpd_main(window):
         with PipelineServer((SERVER_NAME, SERVER_PORT), RequestHandler, window=window) as httpd:
             httpd.serve_forever()
     finally:
-        window.destroy()
+        window.schedule_destroy()
 
 def start_pipeline_server():
     # Create an independent / daemon process by starting a child process and exiting this parent process.
@@ -89,6 +90,7 @@ class App(tk.Tk):
         super().__init__(*args, **kwargs)
 
         self.update_queue = queue.Queue()
+        self.terminating = False
 
         self.title('Pipeline Server')
         self.geometry('500x300+100+100')
@@ -106,14 +108,26 @@ class App(tk.Tk):
         self.style = ttk.Style()
         self.style.theme_use('clam')
 
-        # Configure heading style
         self.style.configure('Treeview.Heading', background='light blue', relief='sunken')
 
+    def schedule_destroy(self):
+        if self.terminating:
+            return
+
+        self.terminating = True
+        self.after(0, self.destroy)
+
     def schedule_update(self, pipeline_queue):
+        if self.terminating:
+            return
+
         self.update_queue.put(dict(pipeline_queue))
         self.after(0, self.update)
 
     def update(self):
+        if self.terminating:
+            return
+
         pipeline_queue = self.update_queue.get()
 
         self.tree.delete(*self.tree.get_children())
@@ -131,6 +145,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.start_as_daemon:
+        # Run Tk App in the main process thread and HTTPD in a daemon thread
         window = App()
         threading.Thread(target=httpd_main, args=(window,), daemon=True).start()
         window.mainloop()
