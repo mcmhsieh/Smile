@@ -12,14 +12,26 @@ import pathlib
 import shutil
 import pickle
 import base64
+import functools
 
 import numpy as np
 import cv2
 import PIL
 import trimesh
 import open3d as o3d
+import shapely
 
 import IPython
+spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
+
+import matplotlib
+matplotlib.use('qt5agg')
+import matplotlib.pyplot as plt
+if not spyder_ide:
+    # TODO: check whether the system display scaling setting needs to be taken into account
+    plt.rcParams['figure.dpi'] = 80.0
+    if hasattr(IPython.get_ipython(), 'run_line_magic'):
+        IPython.get_ipython().run_line_magic('matplotlib', 'qt')
 
 from pipeline_server import start_pipeline_server, post_to_pipeline_server, get_queue_from_pipeline_server
 
@@ -90,6 +102,7 @@ if __name__ == '__main__':
         working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
+    image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'
     input_source_dirpath = workspace_dirpath / 'view_synthesis'
     output_dirpath = workspace_dirpath / 'export_synthesised_views'
 
@@ -109,7 +122,34 @@ if __name__ == '__main__':
 
     # %%
 
-    for input_path in sorted(input_source_dirpath.glob('*.*.pickle')):
+    input_path = workspace_dirpath / 'stitch_key_frames' / 'stitched_key_frames.pickle'
+    with open(input_path, 'rb') as pickle_file:
+        data = pickle.load(pickle_file)
+        key_frame_indices = data['key_frame_indices']
+        key_frame_motion_blurs = data['key_frame_motion_blurs']
+        triangulated_idxs_weights = data['triangulated_idxs_weights']
+        key_frame_image_sample_points = data['key_frame_image_sample_points']
+        key_frame_image_triangulated_point_idxs = data['key_frame_image_triangulated_point_idxs']
+        cross_stitch_disparity_confidence_maps = data['cross_stitch_disparity_confidence_maps']
+        camera_extrinsics = data['camera_extrinsics']
+        camera_intrinsic = data['camera_intrinsic']
+        model_triangulated_points = data['model_triangulated_points']
+        post_optimise_triangulated_idxs_mask = data['post_optimise_triangulated_idxs_mask']
+
+    # %%
+
+    frame_images = []
+    for frame_index, frame_time in key_frame_indices:
+        filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.resized.png'
+        frame_images.append(cv2.cvtColor(cv2.imread(image_source_dirpath / filename, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH), cv2.COLOR_BGR2RGB))
+
+    image_sizes = set([img.shape[1::-1] for img in frame_images])
+    assert len(image_sizes) == 1
+    image_size = image_sizes.pop()
+
+    # %%
+
+    for input_path in sorted(input_source_dirpath.glob('*.pickle')):
         print(input_path)
 
         with open(input_path, 'rb') as pickle_file:
@@ -120,6 +160,8 @@ if __name__ == '__main__':
             vertices = data['vertices']
             triangles = data['triangles']
             vertex_colors = data['vertex_colors']
+            up_model_frames_idxs = data['up_model_frames_idxs']
+            up_model_cmap = data['up_model_cmap']
 
         canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
         canvas_mesh.remove_vertices_by_mask(~np.all(np.isfinite(vertices), axis=1))
@@ -359,6 +401,125 @@ if __name__ == '__main__':
                              up=[0, -1, 0],
                              front=[0, 0, -8],
                              zoom=1.0)
+
+    # %%
+
+    for input_path in sorted(input_source_dirpath.glob('*.pickle')):
+        print(input_path)
+
+        with open(input_path, 'rb') as pickle_file:
+            data = pickle.load(pickle_file)
+            synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
+            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
+            vertices = data['vertices']
+            triangles = data['triangles']
+            vertex_colors = data['vertex_colors']
+            up_model_frames_idxs = data['up_model_frames_idxs']
+            up_model_cmap = data['up_model_cmap']
+
+        # np.unique() returns sorted unique elements
+        secondary_frame_idxs = np.unique(up_model_frames_idxs)
+
+        fig_elements = {}
+
+        fig = plt.figure(f'Interactive frame mapping {input_path.stem}', figsize=(24, 12))
+        fig.clf()
+        fig_ax1 = plt.subplot(1, 2, 1)
+        fig_ax2 = plt.subplot(1, 2, 2)
+
+        fig_ax1.cla()
+        fig_ax1.set_facecolor('grey')
+        fig_ax1.imshow(np.clip(np.require(filtered_up_model_synthetic_frame_img, dtype=np.float32) / 255, 0, 1))
+        #fig_ax1.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N, interpolation_stage='rgba', alpha=0.2)
+        fig_ax2.cla()
+        fig_elements['sec_img'] = fig_ax2.imshow(np.require(frame_images[secondary_frame_idxs[0]], dtype=np.uint8))
+        fig_elements['sec_title'] = fig_ax2.set_title(f'frame idx: {secondary_frame_idxs[0]}')
+
+        canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
+        canvas_mesh.remove_vertices_by_mask(~np.all(np.isfinite(vertices), axis=1))
+        canvas_mesh.compute_vertex_normals()
+        valid_vertices = np.array(canvas_mesh.vertices)
+        valid_vertex_normals = np.array(canvas_mesh.vertex_normals)
+
+        ref_projected_points = camera_intrinsic_synthetic @ (synthetic_camera_extrinsic[:3, :3] @ valid_vertices.T + synthetic_camera_extrinsic[:3, 3:])
+        ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
+
+        projected_polygons = {}
+        for secondary_frame_idx in secondary_frame_idxs:
+            secondary_camera_extrinsic = camera_extrinsics[secondary_frame_idx]
+
+            vertex_points = secondary_camera_extrinsic[:3, :3] @ valid_vertices.T + secondary_camera_extrinsic[:3, 3:]
+            vertex_normals = secondary_camera_extrinsic[:3, :3] @ valid_vertex_normals.T
+
+            secondary_projected_points = camera_intrinsic @ vertex_points
+            secondary_projected_points = secondary_projected_points[:2, :] / secondary_projected_points[2, :]
+
+            camera_rays = vertex_points / np.clip(np.linalg.norm(vertex_points, axis=0), 1e-6, np.inf)
+            normal_ray_alignment = np.sum(camera_rays * vertex_normals, axis=0)
+
+            w, h = image_size
+            inlier_mask = ((secondary_projected_points[0, :] > -0.5) & (secondary_projected_points[0, :] < w - 0.5)
+                           & (secondary_projected_points[1, :] > -0.5) & (secondary_projected_points[1, :] < h - 0.5)
+                           & (normal_ray_alignment < 0))
+
+            projected_polygon = shapely.concave_hull(shapely.MultiPoint(ref_projected_points[:, inlier_mask].T), ratio=0.2)
+            projected_polygons[secondary_frame_idx] = fig_ax1.plot(*(np.array(projected_polygon.boundary.coords)).T, color='b')
+
+        def fig_on_resize(fig, fig_elements, projected_polygons, event):
+            for polygon_boundary_lines in projected_polygons.values():
+                for line in polygon_boundary_lines:
+                    line.set_alpha(0)
+            fig_elements['sec_title'].set_alpha(0)
+            fig.tight_layout()
+            fig.canvas.draw()
+            fig_elements['background'] = fig.canvas.copy_from_bbox(fig.bbox)
+            fig_elements['sec_title'].set_alpha(1)
+            fig.canvas.draw_idle()
+
+        def fig_on_motion(fig, fig_ax1, fig_ax2, fig_elements,
+                          filtered_up_model_synthetic_frame_img, up_model_frames_idxs, projected_polygons, event):
+            fig_scaling = np.sqrt(np.linalg.det(fig_ax1.transAxes.get_matrix()[:2, :2])) * 1e-3
+            for polygon_boundary_lines in projected_polygons.values():
+                for line in polygon_boundary_lines:
+                    line.set_alpha(0)
+                    line.set_linewidth(3 * fig_scaling)
+
+            secondary_frame_idx = None
+            if event.inaxes == fig_ax1:
+                mouse_xy = np.array([event.xdata, event.ydata])
+                x, y = np.round(mouse_xy).astype(int)
+                if np.all(np.isfinite(filtered_up_model_synthetic_frame_img[y, x, :]), axis=-1):
+                    secondary_frame_idx = up_model_frames_idxs[y, x]
+                    for line in projected_polygons[secondary_frame_idx]:
+                        line.set_alpha(0.5)
+                    fig_elements['sec_img'].set_data(frame_images[secondary_frame_idx])
+                    fig_elements['sec_title'].set_text(f'frame idx: {secondary_frame_idx}')
+
+            #fig.canvas.draw()
+            #fig.canvas.draw_idle()
+
+            fig.canvas.restore_region(fig_elements['background'])
+            for polygon_boundary_lines in projected_polygons.values():
+                for line in polygon_boundary_lines:
+                    fig_ax1.draw_artist(line)
+            fig_ax2.draw_artist(fig_elements['sec_img'])
+            fig_ax2.draw_artist(fig_elements['sec_title'])
+            fig.canvas.blit(fig.bbox)
+            fig.canvas.flush_events()
+
+        for cid in [cid for signal, cid_ref_map in fig.canvas.callbacks.callbacks.items() for cid in cid_ref_map]:
+            fig.canvas.mpl_disconnect(cid)
+
+        fig_on_resize_callback = functools.partial(fig_on_resize, fig, fig_elements, projected_polygons)
+        fig_on_motion_callback = functools.partial(fig_on_motion, fig, fig_ax1, fig_ax2, fig_elements,
+                                                   filtered_up_model_synthetic_frame_img, up_model_frames_idxs, projected_polygons)
+        cid_resize = fig.canvas.mpl_connect('resize_event', fig_on_resize_callback)
+        cid_motion = fig.canvas.mpl_connect('motion_notify_event', fig_on_motion_callback)
+        cid_axes_leave = fig.canvas.mpl_connect('axes_leave_event', fig_on_motion_callback)
+        cid_fig_leave = fig.canvas.mpl_connect('figure_leave_event', fig_on_motion_callback)
+
+        fig_on_resize_callback(None)
 
     # %%
 

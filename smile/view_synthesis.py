@@ -3540,6 +3540,10 @@ if __name__ == '__main__':
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(output_path, cv2.cvtColor(output_img, cv2.COLOR_RGB2BGR), params=[cv2.IMWRITE_PNG_COMPRESSION, 1])
 
+        model_mapping_scores_frame_idxs = np.argmax(model_mapping_scores.numpy(force=True), axis=0)
+        model_mapping_scores_cmap = get_frame_idxs_cmap(model_mapping_scores_frame_idxs, N=model_mapping_scores.shape[0])
+        up_model_cmap = get_frame_idxs_cmap(up_model_frames_idxs, N=model_mapping_scores.shape[0])
+
         canvas_mesh = integrated_weighted_canvas_meshes[primary_frame_idx]
         output_path = output_dirpath / (filename_stem + '.pickle')
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3549,12 +3553,10 @@ if __name__ == '__main__':
                          'filtered_up_model_synthetic_frame_img': filtered_up_model_synthetic_frame_img,
                          'vertices': np.array(canvas_mesh.vertices, dtype=np.float32),
                          'triangles': np.array(canvas_mesh.triangles, dtype=np.int32),
-                         'vertex_colors': np.array(canvas_mesh.vertex_colors, dtype=np.float32)},
+                         'vertex_colors': np.array(canvas_mesh.vertex_colors, dtype=np.float32),
+                         'up_model_frames_idxs': up_model_frames_idxs.astype(np.int32),
+                         'up_model_cmap': up_model_cmap},
                         pickle_file)
-
-        model_mapping_scores_frame_idxs = np.argmax(model_mapping_scores.numpy(force=True), axis=0)
-        model_mapping_scores_cmap = get_frame_idxs_cmap(model_mapping_scores_frame_idxs, N=model_mapping_scores.shape[0])
-        up_model_cmap = get_frame_idxs_cmap(up_model_frames_idxs, N=model_mapping_scores.shape[0])
 
 
         plt.figure('Loss components', figsize=(24, 12))
