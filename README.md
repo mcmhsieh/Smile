@@ -85,7 +85,7 @@ The file(s) named *`<key-frame>.<date-time-stamp>.html`* (e.g. `9.20260901-10035
 
 The following shows a screen recording demo of the app. Click on the image to open and test the app in your browser:
 
-[![Synthesised Panorama Key Frame Viewer App](docs/images/a401-351frames-iso45to35-exported-viewer-demo.webp)](docs/viewers/a401-351frames-iso45to35-exported-viewer.html)
+[![Synthesised Panorama Key Frame Viewer App](docs/images/a401-351frames-iso45to35-exported-viewer-demo.webp)](https://htmlpreview.github.io/?https://github.com/mcmhsieh/Smile/blob/main/docs/viewers/a401-351frames-iso45to35-exported-viewer.html)
 
 [^InstallingCudaRuntime]: There should be no need to separately install the CUDA runtime because it is already bundled with PyTorch
 
