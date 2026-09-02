@@ -8,16 +8,16 @@ Licence: [MIT](LICENSE)
 ## Examples
 
 | Input frames | Generated output |
-| - | - |
+| --- | --- |
 | <img src="docs/images/a401-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
 | <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
 | <img src="docs/images/iy37-294frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="200px"/> | <img src="docs/images/iy37-294frames-iso34to37-view_synthesis-animated_output.webp" alt="Example synthetic panoramic view" width="200px"/> |
 
-The above example input image sequences were recorded using these dental cameras:<br>
-[<img src="docs/images/a401-dental_camera.jpg" alt="ANESOK-401 dental camera" width="300px" style="vertical-align: middle"/>](https://github.com/mcmhsieh/ANESOK-401-frame-recorder)
-approximately £40.00 in the UK<br>
-[<img src="docs/images/iy37-dental_camera.jpg" alt="iTiMO-Y37 dental camera" width="300px" style="vertical-align: middle"/>](https://github.com/mcmhsieh/iTiMO-Y37-frame-recorder)
-approximately £10.00 in the UK
+The above example input image sequences were recorded using these dental cameras:
+| | |
+| --- | --- |
+| [<img src="docs/images/a401-dental_camera.jpg" alt="ANESOK-401 dental camera" width="300px"/>](https://github.com/mcmhsieh/ANESOK-401-frame-recorder) | approximately £40.00 in the UK |
+| [<img src="docs/images/iy37-dental_camera.jpg" alt="iTiMO-Y37 dental camera" width="300px"/>](https://github.com/mcmhsieh/iTiMO-Y37-frame-recorder) | approximately £10.00 in the UK |
 
 See https://github.com/mcmhsieh/ANESOK-401-frame-recorder and https://github.com/mcmhsieh/iTiMO-Y37-frame-recorder for information about the dental cameras and recording of image sequences.
 
