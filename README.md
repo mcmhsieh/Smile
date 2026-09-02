@@ -13,6 +13,12 @@ Licence: [MIT](LICENSE)
 | <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
 | <img src="docs/images/iy37-294frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="200px"/> | <img src="docs/images/iy37-294frames-iso34to37-view_synthesis-animated_output.webp" alt="Example synthetic panoramic view" width="200px"/> |
 
+The above example input image sequences were recorded using these dental cameras:<br>
+[<img src="docs/images/a401-dental_camera.jpg" alt="ANESOK-401 dental camera" width="300px" style="vertical-align: middle"/>](https://github.com/mcmhsieh/ANESOK-401-frame-recorder)
+approximately £40.00 in the UK<br>
+[<img src="docs/images/iy37-dental_camera.jpg" alt="iTiMO-Y37 dental camera" width="300px" style="vertical-align: middle"/>](https://github.com/mcmhsieh/iTiMO-Y37-frame-recorder)
+approximately £10.00 in the UK
+
 See https://github.com/mcmhsieh/ANESOK-401-frame-recorder and https://github.com/mcmhsieh/iTiMO-Y37-frame-recorder for information about the dental cameras and recording of image sequences.
 
 ## Getting Started (Microsoft Windows)
@@ -51,10 +57,10 @@ The repository's `pipeline-input` subdirectory includes:
 
 To run the pipeline on a specific dataset, write the name of the subdirectory into a text file `pipeline-workspace/working_subdir.txt` in the cloned repository before running the pipeline.
 
-For example:
+For example: <a id="example_pipeline_sequence_a401-351frames-iso45to35"></a>
 
     cd smile
-    echo a401-273frames-iso34to37> ..\pipeline-workspace\working_subdir.txt
+    echo a401-351frames-iso45to35> ..\pipeline-workspace\working_subdir.txt
     python.exe calc_sequential_flow_and_blur.py
     python.exe select_key_frames.py
     python.exe stitch_key_frames.py
@@ -66,6 +72,20 @@ For example:
 The entire pipeline sequence may take well over 30 minutes to complete for any dataset depending on your system[^ExecutionTimes].
 
 Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pipeline selects the smallest dataset. After running the pipeline in the section [Initial test run on a tiny example dataset](#initial-test-run-on-a-tiny-example-dataset), the pipeline should have written `a401-30frames-iso46to46` to `pipeline-workspace/working_subdir.txt`.
+
+## Viewing input and output images interactively
+
+Run the additional export stage after completing the main stages of the pipeline (i.e. after `view_synthesis.py`):
+
+    python.exe export_synthesised_views.py
+
+If `a401-351frames-iso45to35` was written to `pipeline-workspace/working_subdir.txt` following [the example in the previous section](#example_pipeline_sequence_a401-351frames-iso45to35), then a set of HTML documents and GLB 3D model files will be written to the `pipeline-workspace/a401-351frames-iso45to35/export_synthesised_views` subdirectory.
+
+The file(s) named *`<key-frame>.<date-time-stamp>.html`* (e.g. `9.20260901-100356.html`) are standalone & self-contained HTML apps which display key frames used for stitching and synthesis for the region under the mouse location.
+
+The following shows a screen recording demo of the app. Click on the image to open and test the app in your browser:
+
+[![Synthesised Panorama Key Frame Viewer App](docs/images/a401-351frames-iso45to35-exported-viewer-demo.webp)](docs/viewers/a401-351frames-iso45to35-exported-viewer.html)
 
 [^InstallingCudaRuntime]: There should be no need to separately install the CUDA runtime because it is already bundled with PyTorch
 

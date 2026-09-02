@@ -3555,7 +3555,8 @@ if __name__ == '__main__':
                          'triangles': np.array(canvas_mesh.triangles, dtype=np.int32),
                          'vertex_colors': np.array(canvas_mesh.vertex_colors, dtype=np.float32),
                          'up_model_frames_idxs': up_model_frames_idxs.astype(np.int32),
-                         'up_model_cmap': up_model_cmap},
+                         'up_model_cmap': up_model_cmap,
+                         'up_max_model_mapping_scores': up_max_model_mapping_scores},
                         pickle_file)
 
 

@@ -1,5 +1,6 @@
 """
 Export synthesised view images mapped to their respective canvas/surface meshes.
+Produce interactive plots and HTML documents for viewing mapped frame images and frame projection boundaries.
 
 This is one stage of the processing pipeline for https://github.com/mcmhsieh/Smile
 
@@ -13,6 +14,10 @@ import shutil
 import pickle
 import base64
 import functools
+import gzip
+import io
+import json
+import collections
 
 import numpy as np
 import cv2
@@ -149,6 +154,15 @@ if __name__ == '__main__':
 
     # %%
 
+    def remove_indentation(html):
+        # https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Text/Whitespace
+        # all spaces and tabs immediately before and after a line break are ignored
+        line_indentations = np.array([len(line.rstrip(' ')) - len(line.strip(' ')) for line in html.splitlines()])
+        indentation = np.min(line_indentations[line_indentations > 0])
+        return '\n'.join([line[indentation:] for line in html.splitlines()]).strip()
+
+    # %%
+
     for input_path in sorted(input_source_dirpath.glob('*.pickle')):
         print(input_path)
 
@@ -162,6 +176,7 @@ if __name__ == '__main__':
             vertex_colors = data['vertex_colors']
             up_model_frames_idxs = data['up_model_frames_idxs']
             up_model_cmap = data['up_model_cmap']
+            up_max_model_mapping_scores = data['up_max_model_mapping_scores']
 
         canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
         canvas_mesh.remove_vertices_by_mask(~np.all(np.isfinite(vertices), axis=1))
@@ -291,7 +306,8 @@ if __name__ == '__main__':
         tri_mesh_glb_data = tri_mesh.export(str(output_path))
 
         # https://doc.babylonjs.com/features/featuresDeepDive/babylonViewer/
-        html = r"""
+        html = remove_indentation(r"""
+          <!DOCTYPE html>
           <html>
             <head>
               <title>Babylon Viewer</title>
@@ -312,7 +328,7 @@ if __name__ == '__main__':
                   const scene = viewerElement.viewerDetails.scene;
                   const camera = viewerElement.viewerDetails.camera;
                   camera.fov = 80 / 180 * 3.142;
-                  var frameTime = 0;
+                  let frameTime = 0;
                   function cameraOrbit(frameTime) {
                     const r = (0.5 + 9.5 / (1 + Math.exp(-(frameTime - 40) / 30 * 6))) / 180 * 3.142;
                     const angle = frameTime * 2 * 3.142 / 20;
@@ -331,7 +347,7 @@ if __name__ == '__main__':
               </script>
             </body>
           </html>
-        """.replace('&&B64_GLB_DATA&&', base64.b64encode(tri_mesh_glb_data).decode('utf-8'))
+        """).replace('&&B64_GLB_DATA&&', base64.b64encode(tri_mesh_glb_data).decode('utf-8'))
 
         output_path = output_dirpath / (input_path.stem + '.trimesh.html')
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -404,6 +420,54 @@ if __name__ == '__main__':
 
     # %%
 
+    projected_polygon_coords = collections.defaultdict(dict)
+    for input_path in sorted(input_source_dirpath.glob('*.pickle')):
+        with open(input_path, 'rb') as pickle_file:
+            data = pickle.load(pickle_file)
+            synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
+            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
+            vertices = data['vertices']
+            triangles = data['triangles']
+            vertex_colors = data['vertex_colors']
+            up_model_frames_idxs = data['up_model_frames_idxs']
+            up_model_cmap = data['up_model_cmap']
+            up_max_model_mapping_scores = data['up_max_model_mapping_scores']
+
+        # np.unique() returns sorted unique elements
+        secondary_frame_idxs = np.unique(up_model_frames_idxs)
+
+        canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
+        canvas_mesh.remove_vertices_by_mask(~np.all(np.isfinite(vertices), axis=1))
+        canvas_mesh.compute_vertex_normals()
+        valid_vertices = np.array(canvas_mesh.vertices)
+        valid_vertex_normals = np.array(canvas_mesh.vertex_normals)
+
+        ref_projected_points = camera_intrinsic_synthetic @ (synthetic_camera_extrinsic[:3, :3] @ valid_vertices.T + synthetic_camera_extrinsic[:3, 3:])
+        ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
+
+        for secondary_frame_idx in secondary_frame_idxs:
+            secondary_camera_extrinsic = camera_extrinsics[secondary_frame_idx]
+
+            vertex_points = secondary_camera_extrinsic[:3, :3] @ valid_vertices.T + secondary_camera_extrinsic[:3, 3:]
+            vertex_normals = secondary_camera_extrinsic[:3, :3] @ valid_vertex_normals.T
+
+            secondary_projected_points = camera_intrinsic @ vertex_points
+            secondary_projected_points = secondary_projected_points[:2, :] / secondary_projected_points[2, :]
+
+            camera_rays = vertex_points / np.clip(np.linalg.norm(vertex_points, axis=0), 1e-6, np.inf)
+            normal_ray_alignment = np.sum(camera_rays * vertex_normals, axis=0)
+
+            w, h = image_size
+            inlier_mask = ((secondary_projected_points[0, :] > -0.5) & (secondary_projected_points[0, :] < w - 0.5)
+                           & (secondary_projected_points[1, :] > -0.5) & (secondary_projected_points[1, :] < h - 0.5)
+                           & (normal_ray_alignment < 0))
+
+            projected_polygon = shapely.concave_hull(shapely.MultiPoint(ref_projected_points[:, inlier_mask].T), ratio=0.2)
+            projected_polygon_coords[input_path.stem][secondary_frame_idx] = np.array(projected_polygon.boundary.coords)
+
+    # %%
+
     for input_path in sorted(input_source_dirpath.glob('*.pickle')):
         print(input_path)
 
@@ -417,6 +481,7 @@ if __name__ == '__main__':
             vertex_colors = data['vertex_colors']
             up_model_frames_idxs = data['up_model_frames_idxs']
             up_model_cmap = data['up_model_cmap']
+            up_max_model_mapping_scores = data['up_max_model_mapping_scores']
 
         # np.unique() returns sorted unique elements
         secondary_frame_idxs = np.unique(up_model_frames_idxs)
@@ -436,35 +501,8 @@ if __name__ == '__main__':
         fig_elements['sec_img'] = fig_ax2.imshow(np.require(frame_images[secondary_frame_idxs[0]], dtype=np.uint8))
         fig_elements['sec_title'] = fig_ax2.set_title(f'frame idx: {secondary_frame_idxs[0]}')
 
-        canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices), o3d.utility.Vector3iVector(triangles))
-        canvas_mesh.remove_vertices_by_mask(~np.all(np.isfinite(vertices), axis=1))
-        canvas_mesh.compute_vertex_normals()
-        valid_vertices = np.array(canvas_mesh.vertices)
-        valid_vertex_normals = np.array(canvas_mesh.vertex_normals)
-
-        ref_projected_points = camera_intrinsic_synthetic @ (synthetic_camera_extrinsic[:3, :3] @ valid_vertices.T + synthetic_camera_extrinsic[:3, 3:])
-        ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
-
-        projected_polygons = {}
-        for secondary_frame_idx in secondary_frame_idxs:
-            secondary_camera_extrinsic = camera_extrinsics[secondary_frame_idx]
-
-            vertex_points = secondary_camera_extrinsic[:3, :3] @ valid_vertices.T + secondary_camera_extrinsic[:3, 3:]
-            vertex_normals = secondary_camera_extrinsic[:3, :3] @ valid_vertex_normals.T
-
-            secondary_projected_points = camera_intrinsic @ vertex_points
-            secondary_projected_points = secondary_projected_points[:2, :] / secondary_projected_points[2, :]
-
-            camera_rays = vertex_points / np.clip(np.linalg.norm(vertex_points, axis=0), 1e-6, np.inf)
-            normal_ray_alignment = np.sum(camera_rays * vertex_normals, axis=0)
-
-            w, h = image_size
-            inlier_mask = ((secondary_projected_points[0, :] > -0.5) & (secondary_projected_points[0, :] < w - 0.5)
-                           & (secondary_projected_points[1, :] > -0.5) & (secondary_projected_points[1, :] < h - 0.5)
-                           & (normal_ray_alignment < 0))
-
-            projected_polygon = shapely.concave_hull(shapely.MultiPoint(ref_projected_points[:, inlier_mask].T), ratio=0.2)
-            projected_polygons[secondary_frame_idx] = fig_ax1.plot(*(np.array(projected_polygon.boundary.coords)).T, color='b')
+        projected_polygons = {frame_idx: fig_ax1.plot(*coords.T, color='b')
+                              for frame_idx, coords in projected_polygon_coords[input_path.stem].items()}
 
         def fig_on_resize(fig, fig_elements, projected_polygons, event):
             for polygon_boundary_lines in projected_polygons.values():
@@ -520,6 +558,623 @@ if __name__ == '__main__':
         cid_fig_leave = fig.canvas.mpl_connect('figure_leave_event', fig_on_motion_callback)
 
         fig_on_resize_callback(None)
+
+    # %%
+
+    # =====================================================================
+    # WebP image embedding
+    # =====================================================================
+
+    def image_to_webp_data_uri(image: PIL.Image, quality: int = 90) -> str:
+        """
+        Convert an image to WebP and return a base64 data URI.
+        """
+
+        assert image.mode == 'RGB'
+        buffer = io.BytesIO()
+        image.save(buffer, format='WEBP', quality=quality, method=6)
+        encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+
+        return 'data:image/webp;base64,' + encoded
+
+    # =====================================================================
+    # HTML generator
+    # =====================================================================
+
+    def generate_panorama_html(panorama_image: PIL.Image,
+                               map_image: PIL.Image,
+                               frame_images: list[PIL.Image],
+                               key_frame_hulls: list[list[tuple[float, float]]],
+                               webp_quality: int = 90):
+        """
+        Generate a self-contained panorama viewer.
+        """
+
+        # ---------------------------------------------------------------
+        # Validate panorama and map dimensions.
+        # ---------------------------------------------------------------
+
+        if panorama_image.size != map_image.size:
+            raise ValueError(f'Panorama size {panorama_image.size} does not match map size {map_image.size}')
+
+        width, height = panorama_image.size
+
+        frame_width, frame_height = np.max([image.size for image in frame_images], axis=0)
+
+        # ---------------------------------------------------------------
+        # Key frame hulls.
+        # ---------------------------------------------------------------
+
+        hulls_json = json.dumps(key_frame_hulls, separators=(',', ':'))
+
+        # ---------------------------------------------------------------
+        # Panorama -> WebP.
+        # ---------------------------------------------------------------
+
+        panorama_uri = image_to_webp_data_uri(panorama_image, webp_quality)
+
+        # ---------------------------------------------------------------
+        # Key frames -> WebP.
+        # ---------------------------------------------------------------
+
+        key_frame_uris = [image_to_webp_data_uri(image, webp_quality) for image in frame_images]
+        key_frame_json = json.dumps(key_frame_uris, separators=(',', ':'))
+
+        # ---------------------------------------------------------------
+        # gzip map.
+        # ---------------------------------------------------------------
+
+        map_compressed = gzip.compress(map_image.tobytes(), compresslevel=9)
+
+        # ---------------------------------------------------------------
+        # Base64 for embedding in JavaScript.
+        # ---------------------------------------------------------------
+
+        map_base64 = base64.b64encode(map_compressed).decode('ascii')
+
+        # ---------------------------------------------------------------
+        # HTML.
+        # ---------------------------------------------------------------
+
+        html_document = remove_indentation(f"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Synthesised Panorama Key Frame Viewer</title>
+            <style>
+
+            body {{
+              margin: 0;
+              padding: 20px;
+              background: #222;
+              color: white;
+              font-family: Arial, sans-serif;
+            }}
+
+            #container {{
+              display: flex;
+              align-items: flex-start;
+              gap: 20px;
+              width: 100%;
+            }}
+
+            /*
+             * The panorama column is exactly as wide as the displayed
+             * panorama, so the key-frame container sits immediately beside it.
+             */
+            #panoramaColumn {{
+              flex: 0 1 auto;
+              min-width: 100px;
+            }}
+
+            /*
+             * This is the available area for the panorama.
+             */
+            #panoramaContainer {{
+              position: relative;
+              width: 100%;
+              height: calc(100vh - 120px);
+            }}
+
+            /*
+             * The actual panorama dimensions are set by JavaScript.
+             */
+            #panorama {{
+              display: block;
+              cursor: crosshair;
+            }}
+
+            /*
+             * SVG overlay containing the mapped key-frame convex hull.
+             * SVG follows the actual displayed panorama dimensions.
+             */
+            #hullOverlay {{
+              position: absolute;
+              left: 0;
+              top: 0;
+              pointer-events: none;
+            }}
+
+            /*
+             * Transparent blue convex-hull polygon.
+             * The fill is very transparent while the outline is somewhat more visible.
+             */
+            #hullPolygon {{
+              fill: rgba(0, 100, 255, 0.05);
+              stroke: rgba(0, 120, 255, 0.75);
+              stroke-width: 2;
+              vector-effect: non-scaling-stroke;
+              display: none;
+            }}
+
+            /*
+             * Fixed-size key-frame area.
+             * It is the second flex item, immediately following the panorama.
+             * Reserve enough space for the largest key frame regardless
+             * of whether a key frame is currently mapped.
+             * The fixed width means this element never changes size when
+             * switching between a valid key frame and map value -1.
+             */
+            #keyFrameContainer {{
+              flex: 0 0 {frame_width+10}px;
+              width: {frame_width+10}px;
+              height: {frame_height+10}px;
+              overflow: hidden;
+              margin: 0;
+              padding: 5px;
+              box-sizing: border-box;
+              background: #111;
+              border: 1px solid #555;
+            }}
+
+            /*
+             * Key frames are always shown at their native dimensions.
+             */
+            #keyFrame {{
+              display: none;
+              width: auto;
+              height: auto;
+              max-width: none;
+              max-height: none;
+              margin: 0;
+            }}
+
+            #spacerColumn {{
+              flex: 1 1 auto;
+            }}
+
+            #placeholder {{
+              color: #777;
+            }}
+
+            #info {{
+              display: block;
+              color: #aaa;
+              font-family: monospace;
+            }}
+
+            </style>
+            </head>
+
+            <body>
+
+            <h2>Synthesised Panorama Key Frame Viewer</h2>
+
+            <div id="container">
+
+              <!-- =========================================================
+                   Panorama
+                   ========================================================= -->
+
+              <div id="panoramaColumn">
+
+                <div id="panoramaContainer">
+
+                  <img id="panorama" src="{panorama_uri}" width="{width}" height="{height}" alt="Panorama">
+
+                  <!--
+                       SVG coordinate system exactly matches the native
+                       panorama coordinate system.
+                  -->
+
+                  <svg id="hullOverlay" viewBox="0 0 {width} {height}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+                    <polygon id="hullPolygon" points=""/>
+                  </svg>
+
+                  <div id="info">
+                    Loading map...
+                  </div>
+
+                </div>
+
+              </div>
+
+              <!-- =========================================================
+                   Key frame
+                   ========================================================= -->
+
+              <div id="keyFrameContainer">
+                <img id="keyFrame" alt="Key frame">
+                <span id="placeholder">Move the mouse over the panorama image to view key frames.</span>
+              </div>
+
+              <!-- =========================================================
+                   Spacer column
+                   ========================================================= -->
+
+              <div id="spacerColumn">
+              </div>
+
+            </div>
+
+            <script>
+
+            "use strict";
+
+            /* =================================================================
+               Panorama and map dimensions
+               ================================================================= */
+
+            const sourceWidth = {width};
+            const sourceHeight = {height};
+
+            /* =================================================================
+               Key-frame WebP images
+               ================================================================= */
+
+            const keyFrameUris = {key_frame_json};
+
+            /* =================================================================
+               Key-frame convex hulls
+               =================================================================
+
+               keyFrameHulls[index] contains: [[x1, y1], [x2, y2], ...]
+               Coordinates are in native panorama pixel coordinates.
+               */
+
+            const keyFrameHulls = {hulls_json};
+
+            /* =================================================================
+               Compressed encoded map
+               ================================================================= */
+
+            const mapBase64 = "{map_base64}";
+
+            /* =================================================================
+               Base64 decoder
+               ================================================================= */
+
+            function base64ToUint8Array(base64) {{
+              const binary = atob(base64);
+              const bytes = new Uint8Array(binary.length);
+
+              for (let i = 0; i < binary.length; ++i) {{
+                bytes[i] = binary.charCodeAt(i);
+              }}
+
+              return bytes;
+            }}
+
+            /* =================================================================
+               Decode and decompress map
+               ================================================================= */
+
+            async function decodeMap() {{
+              /*
+               * Base64 -> gzip data.
+               */
+              const compressed = base64ToUint8Array(mapBase64);
+
+              /*
+               * Decompress gzip data.
+               */
+              const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+              const buffer = await new Response(stream).arrayBuffer();
+
+              return new Int32Array(buffer);
+            }}
+
+            /* =================================================================
+               DOM elements
+               ================================================================= */
+
+            const container = document.getElementById("container");
+            const panoramaContainer = document.getElementById("panoramaContainer");
+            const panorama = document.getElementById("panorama");
+            const hullPolygon = document.getElementById("hullPolygon");
+            const keyFrame = document.getElementById("keyFrame");
+            const spacerColumn = document.getElementById("spacerColumn");
+            const placeholder = document.getElementById("placeholder");
+            const info = document.getElementById("info");
+
+            /* =================================================================
+               Viewer state
+               ================================================================= */
+
+            let mapValues = null;
+            let previousIndex = null;
+
+            /* =================================================================
+               Display convex hull
+               ================================================================= */
+
+            function displayHull(keyFrameIndex) {{
+              /*
+               * Explicitly handle -1.
+               *
+               * There is no key frame and therefore no polygon.
+               */
+              if (keyFrameIndex === -1) {{
+                hideHull();
+                return;
+              }}
+
+              const hull = keyFrameHulls[keyFrameIndex];
+
+              /*
+               * No hull available.
+               */
+              if (!hull || hull.length < 3) {{
+                hideHull();
+                return;
+              }}
+
+              /*
+               * Convert:
+               *     [[x1,y1], [x2,y2], [x3,y3]]
+               * to:
+               *     "x1,y1 x2,y2 x3,y3"
+               */
+              const points = hull.map(function(point) {{
+                return (point[0] + "," + point[1]);
+              }}).join(" ");
+
+              hullPolygon.setAttribute("points", points);
+
+              hullPolygon.style.display = "block";
+            }}
+
+            /* =================================================================
+               Hide convex hull
+               ================================================================= */
+
+            function hideHull() {{
+              hullPolygon.style.display = "none";
+              hullPolygon.setAttribute("points", "");
+            }}
+
+            /* =================================================================
+               Display key frame
+               ================================================================= */
+
+            function displayKeyFrame(keyFrameIndex) {{
+              /*
+               * -1 explicitly means no key frame.
+               */
+              if (keyFrameIndex === -1) {{
+                hideKeyFrame();
+                return;
+              }}
+
+              /*
+               * Validate index.
+               */
+              if (!Number.isInteger(keyFrameIndex) || keyFrameIndex < 0 || keyFrameIndex >= keyFrameUris.length) {{
+                hideKeyFrame();
+                return;
+              }}
+
+              const uri = keyFrameUris[keyFrameIndex];
+
+              if (!uri) {{
+                hideKeyFrame();
+                return;
+              }}
+
+              keyFrame.src = uri;
+              keyFrame.style.display = "block";
+              placeholder.style.display = "none";
+            }}
+
+            /* =================================================================
+               Hide key frame
+               ================================================================= */
+
+            function hideKeyFrame() {{
+              keyFrame.style.display = "none";
+              keyFrame.removeAttribute("src");
+              placeholder.style.display = "block";
+            }}
+
+            /* =================================================================
+               Load map
+               ================================================================= */
+
+            decodeMap().then(function(map) {{
+              mapValues = map;
+              info.textContent = "Map loaded. Move the mouse over the panorama image to view key frames.";
+            }}).catch(function(error) {{
+              console.error(error);
+              info.textContent = "Error loading map.";
+            }});
+
+            /* =================================================================
+               Calculate displayed panorama dimensions and resize the SVG overlay to exactly match it.
+               ================================================================= */
+
+            function updatePanoramaSize() {{
+              const availableWidth = panoramaContainer.clientWidth + spacerColumn.clientWidth;
+              const availableHeight = panoramaContainer.clientHeight;
+
+              /*
+               * Native panorama aspect ratio.
+               */
+              const aspectRatio = sourceWidth / sourceHeight;
+
+              let displayWidth = availableWidth;
+              let displayHeight = displayWidth / aspectRatio;
+
+              /*
+               * If the panorama is too tall, constrain it to the available area.
+               */
+              if (displayHeight > availableHeight) {{
+                displayHeight = availableHeight;
+                displayWidth = displayHeight * aspectRatio;
+              }}
+
+              /*
+               * Set the actual displayed panorama dimensions.
+               * Make the SVG overlay exactly the same size as the displayed panorama.
+               */
+              panorama.style.width = Math.round(displayWidth) + "px";
+              panorama.style.height = Math.round(displayHeight) + "px";
+              hullOverlay.style.width = Math.round(displayWidth) + "px";
+              hullOverlay.style.height = Math.round(displayHeight) + "px";
+              info.style.width = Math.round(displayWidth) + "px";
+            }}
+
+            /*
+             * Run after all page resources have loaded.
+             */
+            window.addEventListener("load", updatePanoramaSize);
+
+            /*
+             * Handle browser resizing.
+             */
+            window.addEventListener("resize", updatePanoramaSize);
+
+            const panoramaResizeObserver = new ResizeObserver(function() {{
+              updatePanoramaSize();
+            }});
+
+            panoramaResizeObserver.observe(container);
+
+            /* =================================================================
+               Mouse movement
+               ================================================================= */
+
+            panorama.addEventListener("mousemove", function(event) {{
+              if (!mapValues) {{
+                return;
+              }}
+
+              /*
+               * Bounding rectangle of the displayed panorama.
+               */
+              const rect = panorama.getBoundingClientRect();
+
+              /*
+               * Mouse position relative to displayed image.
+               */
+              const displayX = event.clientX - rect.left;
+              const displayY = event.clientY - rect.top;
+
+              /*
+               * Convert displayed coordinates to native panorama coordinates.
+               */
+              let x = Math.round(displayX * sourceWidth / rect.width);
+              let y = Math.round(displayY * sourceHeight / rect.height);
+
+              /*
+               * Clamp coordinates.
+               */
+              x = Math.max(0, Math.min(sourceWidth - 1, x));
+              y = Math.max(0, Math.min(sourceHeight - 1, y));
+
+              /*
+               * O(1) map lookup.
+               */
+              const mapPosition = y * sourceWidth + x;
+              const keyFrameIndex = mapValues[mapPosition];
+
+              info.textContent = "x=" + x + "  y=" + y + "  key_frame=" + keyFrameIndex;
+
+              /*
+               * Don't update the display if the map value hasn't changed.
+               */
+              if (keyFrameIndex === previousIndex) {{
+                return;
+              }}
+
+              previousIndex = keyFrameIndex;
+
+              displayHull(keyFrameIndex);
+              displayKeyFrame(keyFrameIndex);
+            }});
+
+            /* =================================================================
+               Mouse leaves panorama
+               ================================================================= */
+
+            panorama.addEventListener("mouseleave", function() {{
+              hideHull();
+              hideKeyFrame();
+              previousIndex = null;
+              info.textContent = "Move the mouse over the panorama image to view key frames.";
+            }});
+
+            </script>
+            </body>
+            </html>
+        """)
+
+        # ---------------------------------------------------------------
+        # Report sizes.
+        # ---------------------------------------------------------------
+
+        print('Panorama:')
+        print(f'  dimensions: {width} x {height}')
+        print('Map:')
+        print(f'  gzip size:   {len(map_compressed):,} bytes')
+        print(f'  Base64 size: {len(map_base64):,} characters')
+
+        return html_document
+
+    for input_path in sorted(input_source_dirpath.glob('*.pickle')):
+        print(input_path)
+
+        with open(input_path, 'rb') as pickle_file:
+            data = pickle.load(pickle_file)
+            synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
+            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
+            vertices = data['vertices']
+            triangles = data['triangles']
+            vertex_colors = data['vertex_colors']
+            up_model_frames_idxs = data['up_model_frames_idxs']
+            up_model_cmap = data['up_model_cmap']
+            up_max_model_mapping_scores = data['up_max_model_mapping_scores']
+
+        # Hull vertices must be ordered around the perimeter
+        key_frame_hulls = [[tuple(row) for row in projected_polygon_coords[input_path.stem].get(frame_idx, [])]
+                           for frame_idx in range(len(frame_images))]
+
+        if True:
+            # Note that the cursor becomes invisible when the background colour is (127, 127, 127)
+            panorama_image = np.array(filtered_up_model_synthetic_frame_img)
+            panorama_image[~np.all(np.isfinite(panorama_image), axis=-1)] = np.array([[[51, 51, 76]]])
+            panorama_image = np.clip(panorama_image, 0, 255).astype(np.uint8)
+        else:
+            # Switching from the panorama image to the key frame map can be useful for testing & debugging
+            panorama_image = (up_model_cmap(up_model_frames_idxs)[:, :, :3] * 255).astype(np.uint8)
+            panorama_image[~np.all(np.isfinite(filtered_up_model_synthetic_frame_img), axis=-1)] = np.array([[[255, 255, 255]]])
+        panorama_image = PIL.Image.fromarray(panorama_image)
+
+        # Negative map image values denote no key frame mapping
+        map_image = np.array(up_model_frames_idxs)
+        map_image[~np.all(np.isfinite(filtered_up_model_synthetic_frame_img), axis=-1)] = -1
+        map_image = PIL.Image.fromarray(map_image)
+
+        panorama_html = generate_panorama_html(panorama_image=panorama_image, map_image=map_image,
+                                               frame_images=[PIL.Image.fromarray(image) for image in frame_images],
+                                               key_frame_hulls=key_frame_hulls,
+                                               webp_quality=90)
+
+        output_path = output_dirpath / (input_path.stem + '.html')
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(panorama_html, encoding='utf-8')
 
     # %%
 
