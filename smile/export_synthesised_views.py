@@ -159,7 +159,10 @@ if __name__ == '__main__':
         # all spaces and tabs immediately before and after a line break are ignored
         line_indentations = np.array([len(line.rstrip(' ')) - len(line.strip(' ')) for line in html.splitlines()])
         indentation = np.min(line_indentations[line_indentations > 0])
-        return '\n'.join([line[indentation:] for line in html.splitlines()]).strip()
+        # IPython runcell() appears to add leading spaces as indentation to all lines, including
+        # multi-line strings and empty lines.
+        # Workaround by removing trailing spaces.
+        return '\n'.join([line[indentation:].rstrip(' ') for line in html.splitlines()]).strip()
 
     # %%
 
@@ -1205,14 +1208,16 @@ if __name__ == '__main__':
             }});
 
             /* =================================================================
-               Pointer leaves panorama
+               Mouse leaves panorama
                ================================================================= */
 
             panorama.addEventListener("pointerleave", function(event) {{
-              hideHull();
-              hideKeyFrame();
-              previousIndex = null;
-              info.textContent = "Move, tap or drag over the panorama image to view key frames.";
+              if (event.pointerType == "mouse") {{
+                hideHull();
+                hideKeyFrame();
+                previousIndex = null;
+                info.textContent = "Move, tap or drag over the panorama image to view key frames.";
+              }}
             }});
 
             </script>
