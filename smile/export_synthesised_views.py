@@ -591,7 +591,7 @@ if __name__ == '__main__':
         """
 
         # ---------------------------------------------------------------
-        # Validate panorama and map dimensions.
+        # Panorama & map and key frame dimensions.
         # ---------------------------------------------------------------
 
         if panorama_image.size != map_image.size:
@@ -647,7 +647,8 @@ if __name__ == '__main__':
 
             body {{
               margin: 0;
-              padding: 20px;
+              padding: 0px 20px 0px 20px;
+              overflow: hidden;
               background: #222;
               color: white;
               font-family: Arial, sans-serif;
@@ -658,49 +659,51 @@ if __name__ == '__main__':
               align-items: flex-start;
               gap: 20px;
               width: 100%;
+              height: calc(100vh - 7em);
             }}
 
             /*
-             * The panorama column is exactly as wide as the displayed
-             * panorama, so the key-frame container sits immediately beside it.
+             * updateItemSizes() calculates and sets the final displayed width and height of this item.
              */
-            #panoramaColumn {{
+            #panoramaItem {{
               flex: 0 1 auto;
-              min-width: 100px;
             }}
 
             /*
-             * This is the available area for the panorama.
+             * Container for the panorama and the mapped key-frame convex hull polygon SVG overlay.
+             * They maintain the same dimensions by sharing the same grid cell.
              */
             #panoramaContainer {{
+              display: grid;
               position: relative;
               width: 100%;
-              height: calc(100vh - 120px);
+              height: auto;
             }}
 
-            /*
-             * The actual panorama dimensions are set by JavaScript.
-             */
             #panorama {{
               display: block;
+              grid-column: 1;
+              grid-row: 1;
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              margin: 0;
               cursor: crosshair;
+              touch-action: none;
+              user-select: none;
+              -webkit-user-drag: none;
             }}
 
-            /*
-             * SVG overlay containing the mapped key-frame convex hull.
-             * SVG follows the actual displayed panorama dimensions.
-             */
             #hullOverlay {{
-              position: absolute;
-              left: 0;
-              top: 0;
+              grid-column: 1;
+              grid-row: 1;
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              margin: 0;
               pointer-events: none;
             }}
 
-            /*
-             * Transparent blue convex-hull polygon.
-             * The fill is very transparent while the outline is somewhat more visible.
-             */
             #hullPolygon {{
               fill: rgba(0, 100, 255, 0.05);
               stroke: rgba(0, 120, 255, 0.75);
@@ -710,18 +713,10 @@ if __name__ == '__main__':
             }}
 
             /*
-             * Fixed-size key-frame area.
-             * It is the second flex item, immediately following the panorama.
-             * Reserve enough space for the largest key frame regardless
-             * of whether a key frame is currently mapped.
-             * The fixed width means this element never changes size when
-             * switching between a valid key frame and map value -1.
+             * updateItemSizes() calculates and sets the final displayed width and height of this item.
              */
-            #keyFrameContainer {{
-              flex: 0 0 {frame_width+10}px;
-              width: {frame_width+10}px;
-              height: {frame_height+10}px;
-              overflow: hidden;
+            #keyFrameItem {{
+              flex: 0 1 auto;
               margin: 0;
               padding: 5px;
               box-sizing: border-box;
@@ -729,20 +724,12 @@ if __name__ == '__main__':
               border: 1px solid #555;
             }}
 
-            /*
-             * Key frames are always shown at their native dimensions.
-             */
             #keyFrame {{
               display: none;
-              width: auto;
-              height: auto;
-              max-width: none;
-              max-height: none;
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
               margin: 0;
-            }}
-
-            #spacerColumn {{
-              flex: 1 1 auto;
             }}
 
             #placeholder {{
@@ -753,6 +740,42 @@ if __name__ == '__main__':
               display: block;
               color: #aaa;
               font-family: monospace;
+              margin: 0;
+            }}
+
+            #spacerItem {{
+              flex: 1 1 auto;
+            }}
+
+            /*
+             * On portrait displays, stack the panorama and key frame items vertically.
+             */
+            @media (orientation: portrait) {{
+
+              body {{
+                padding: 0px 10px 0px 10px;
+              }}
+
+              #container {{
+                flex-direction: column;
+                gap: 10px;
+                height: calc(100vh - 6em);
+              }}
+
+              #panoramaItem {{
+                width: 100%;
+                height: auto;
+              }}
+
+              #keyFrameItem {{
+                width: 100%;
+                height: auto;
+              }}
+
+              #info {{
+                display: none;
+              }}
+
             }}
 
             </style>
@@ -765,46 +788,45 @@ if __name__ == '__main__':
             <div id="container">
 
               <!-- =========================================================
-                   Panorama
+                   Panorama item
                    ========================================================= -->
 
-              <div id="panoramaColumn">
+              <div id="panoramaItem">
 
                 <div id="panoramaContainer">
 
                   <img id="panorama" src="{panorama_uri}" width="{width}" height="{height}" alt="Panorama">
 
                   <!--
-                       SVG coordinate system exactly matches the native
-                       panorama coordinate system.
+                       SVG coordinate system exactly matches the native panorama coordinate system.
                   -->
 
                   <svg id="hullOverlay" viewBox="0 0 {width} {height}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
                     <polygon id="hullPolygon" points=""/>
                   </svg>
 
-                  <div id="info">
-                    Loading map...
-                  </div>
+                </div>
 
+                <div id="info">
+                  Loading map...
                 </div>
 
               </div>
 
               <!-- =========================================================
-                   Key frame
+                   Key frame item
                    ========================================================= -->
 
-              <div id="keyFrameContainer">
+              <div id="keyFrameItem">
                 <img id="keyFrame" alt="Key frame">
-                <span id="placeholder">Move the mouse over the panorama image to view key frames.</span>
+                <span id="placeholder">Move, tap or drag over the panorama image to view key frames.</span>
               </div>
 
               <!-- =========================================================
-                   Spacer column
+                   Spacer item
                    ========================================================= -->
 
-              <div id="spacerColumn">
+              <div id="spacerItem">
               </div>
 
             </div>
@@ -814,7 +836,7 @@ if __name__ == '__main__':
             "use strict";
 
             /* =================================================================
-               Panorama and map dimensions
+               Panorama & map dimensions
                ================================================================= */
 
             const sourceWidth = {width};
@@ -825,6 +847,8 @@ if __name__ == '__main__':
                ================================================================= */
 
             const keyFrameUris = {key_frame_json};
+            const keyFrameWidth = {frame_width};
+            const keyFrameHeight = {frame_height};
 
             /* =================================================================
                Key-frame convex hulls
@@ -832,7 +856,7 @@ if __name__ == '__main__':
 
                keyFrameHulls[index] contains: [[x1, y1], [x2, y2], ...]
                Coordinates are in native panorama pixel coordinates.
-               */
+            */
 
             const keyFrameHulls = {hulls_json};
 
@@ -881,13 +905,16 @@ if __name__ == '__main__':
                ================================================================= */
 
             const container = document.getElementById("container");
+            const panoramaItem = document.getElementById("panoramaItem");
             const panoramaContainer = document.getElementById("panoramaContainer");
             const panorama = document.getElementById("panorama");
+            const hullOverlay = document.getElementById("hullOverlay");
             const hullPolygon = document.getElementById("hullPolygon");
+            const keyFrameItem = document.getElementById("keyFrameItem");
             const keyFrame = document.getElementById("keyFrame");
-            const spacerColumn = document.getElementById("spacerColumn");
             const placeholder = document.getElementById("placeholder");
             const info = document.getElementById("info");
+            const spacerItem = document.getElementById("spacerItem");
 
             /* =================================================================
                Viewer state
@@ -994,68 +1021,114 @@ if __name__ == '__main__':
 
             decodeMap().then(function(map) {{
               mapValues = map;
-              info.textContent = "Map loaded. Move the mouse over the panorama image to view key frames.";
+              info.textContent = "Map loaded. Move, tap or drag over the panorama image to view key frames.";
             }}).catch(function(error) {{
               console.error(error);
               info.textContent = "Error loading map.";
             }});
 
             /* =================================================================
-               Calculate displayed panorama dimensions and resize the SVG overlay to exactly match it.
+               Calculate and set displayed panorama and key frame item dimensions.
                ================================================================= */
 
-            function updatePanoramaSize() {{
-              const availableWidth = panoramaContainer.clientWidth + spacerColumn.clientWidth;
-              const availableHeight = panoramaContainer.clientHeight;
+            function updateItemSizes() {{
+              let frameDisplayWidth;
+              let frameDisplayHeight;
+              let sourceDisplayWidth;
+              let sourceDisplayHeight;
+
+              const frameAspectRatio = keyFrameWidth / keyFrameHeight;
+              const sourceAspectRatio = sourceWidth / sourceHeight;
 
               /*
-               * Native panorama aspect ratio.
+               * https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/orientation
+               * portrait: viewport height >= width
+               * landscape: viewport width > height
+               * Note: This feature does not correspond to device orientation.
                */
-              const aspectRatio = sourceWidth / sourceHeight;
+              if (window.matchMedia("(orientation: portrait)").matches) {{
+                /*
+                 * Allocate 2/3 of the available height to the key frame item and the remainder to the panorama.
+                 * Constrain their dimensions to maintain their respective image aspect ratios.
+                 */
+                const availableWidth = Math.max(container.clientWidth, 100);
+                const availableHeight = Math.max(panoramaItem.clientHeight + keyFrameItem.clientHeight
+                                                 + spacerItem.clientHeight + 10, 100);
 
-              let displayWidth = availableWidth;
-              let displayHeight = displayWidth / aspectRatio;
+                const frameAvailableHeight = Math.max(2 / 3 * availableHeight, 100);
 
-              /*
-               * If the panorama is too tall, constrain it to the available area.
-               */
-              if (displayHeight > availableHeight) {{
-                displayHeight = availableHeight;
-                displayWidth = displayHeight * aspectRatio;
+                frameDisplayWidth = Math.min(availableWidth, keyFrameWidth);
+                frameDisplayHeight = frameDisplayWidth / frameAspectRatio;
+
+                if (frameDisplayHeight > frameAvailableHeight) {{
+                  frameDisplayHeight = frameAvailableHeight;
+                  frameDisplayWidth = frameDisplayHeight * frameAspectRatio;
+                }}
+
+                const sourceAvailableHeight = Math.max(availableHeight - frameDisplayHeight, 100);
+
+                sourceDisplayWidth = Math.min(availableWidth, sourceWidth);
+                sourceDisplayHeight = sourceDisplayWidth / sourceAspectRatio;
+
+                if (sourceDisplayHeight > sourceAvailableHeight) {{
+                  sourceDisplayHeight = sourceAvailableHeight;
+                  sourceDisplayWidth = sourceDisplayHeight * sourceAspectRatio;
+                }}
+              }} else {{
+                /*
+                 * Allocate 2/3 of the available width to the key frame item and the remainder to the panorama.
+                 * Constrain their dimensions to maintain their respective image aspect ratios.
+                 */
+                const availableHeight = Math.max(container.clientHeight, 100);
+                const availableWidth = Math.max(panoramaItem.clientWidth + keyFrameItem.clientWidth
+                                                + spacerItem.clientWidth + 20, 100);
+
+                const frameAvailableWidth = Math.max(2 / 3 * availableWidth, 100);
+
+                frameDisplayHeight = Math.min(availableHeight, keyFrameHeight);
+                frameDisplayWidth = frameDisplayHeight * frameAspectRatio;
+
+                if (frameDisplayWidth > frameAvailableWidth) {{
+                  frameDisplayWidth = frameAvailableWidth;
+                  frameDisplayHeight = frameDisplayWidth / frameAspectRatio;
+                }}
+
+                const sourceAvailableWidth = Math.max(availableWidth - frameDisplayWidth, 100);
+
+                sourceDisplayHeight = Math.min(availableHeight, sourceHeight);
+                sourceDisplayWidth = sourceDisplayHeight * sourceAspectRatio;
+
+                if (sourceDisplayWidth > sourceAvailableWidth) {{
+                  sourceDisplayWidth = sourceAvailableWidth;
+                  sourceDisplayHeight = sourceDisplayWidth / sourceAspectRatio;
+                }}
               }}
 
               /*
-               * Set the actual displayed panorama dimensions.
-               * Make the SVG overlay exactly the same size as the displayed panorama.
+               * Set the item dimensions.
                */
-              panorama.style.width = Math.round(displayWidth) + "px";
-              panorama.style.height = Math.round(displayHeight) + "px";
-              hullOverlay.style.width = Math.round(displayWidth) + "px";
-              hullOverlay.style.height = Math.round(displayHeight) + "px";
-              info.style.width = Math.round(displayWidth) + "px";
+              keyFrameItem.style.width = Math.round(frameDisplayWidth) + "px";
+              keyFrameItem.style.height = Math.round(frameDisplayHeight) + "px";
+              panoramaItem.style.width = Math.round(sourceDisplayWidth) + "px";
+              panoramaItem.style.height = Math.round(sourceDisplayHeight) + "px";
             }}
 
             /*
-             * Run after all page resources have loaded.
+             * Update item sizes after all page resources have loaded, on browser resizing
+             * and container resizing.
              */
-            window.addEventListener("load", updatePanoramaSize);
-
-            /*
-             * Handle browser resizing.
-             */
-            window.addEventListener("resize", updatePanoramaSize);
-
+            window.addEventListener("load", updateItemSizes);
+            window.addEventListener("resize", updateItemSizes);
             const panoramaResizeObserver = new ResizeObserver(function() {{
-              updatePanoramaSize();
+              updateItemSizes();
             }});
-
             panoramaResizeObserver.observe(container);
 
             /* =================================================================
-               Mouse movement
+               Pointer position event handler
                ================================================================= */
 
-            panorama.addEventListener("mousemove", function(event) {{
+            function updateFromPointer(event) {{
               if (!mapValues) {{
                 return;
               }}
@@ -1066,10 +1139,18 @@ if __name__ == '__main__':
               const rect = panorama.getBoundingClientRect();
 
               /*
-               * Mouse position relative to displayed image.
+               * Pointer position relative to displayed image.
                */
               const displayX = event.clientX - rect.left;
               const displayY = event.clientY - rect.top;
+
+              /*
+               * Ignore pointer positions outside the displayed panorama.
+               */
+              if (displayX < 0 || displayX >= rect.width ||
+                  displayY < 0 || displayY >= rect.height) {{
+                return;
+              }}
 
               /*
                * Convert displayed coordinates to native panorama coordinates.
@@ -1089,7 +1170,10 @@ if __name__ == '__main__':
               const mapPosition = y * sourceWidth + x;
               const keyFrameIndex = mapValues[mapPosition];
 
-              info.textContent = "x=" + x + "  y=" + y + "  key_frame=" + keyFrameIndex;
+              info.textContent = "x=" + x + "  y=" + y;
+              if (keyFrameIndex >= 0) {{
+                info.textContent += "  key_frame=" + keyFrameIndex;
+              }}
 
               /*
                * Don't update the display if the map value hasn't changed.
@@ -1102,17 +1186,33 @@ if __name__ == '__main__':
 
               displayHull(keyFrameIndex);
               displayKeyFrame(keyFrameIndex);
+            }}
+
+            /* =================================================================
+               Mouse, touch and stylus movement
+               ================================================================= */
+
+            panorama.addEventListener("pointermove", function(event) {{
+              updateFromPointer(event);
             }});
 
             /* =================================================================
-               Mouse leaves panorama
+               Tap or pointer press
                ================================================================= */
 
-            panorama.addEventListener("mouseleave", function() {{
+            panorama.addEventListener("pointerdown", function(event) {{
+              updateFromPointer(event);
+            }});
+
+            /* =================================================================
+               Pointer leaves panorama
+               ================================================================= */
+
+            panorama.addEventListener("pointerleave", function(event) {{
               hideHull();
               hideKeyFrame();
               previousIndex = null;
-              info.textContent = "Move the mouse over the panorama image to view key frames.";
+              info.textContent = "Move, tap or drag over the panorama image to view key frames.";
             }});
 
             </script>
