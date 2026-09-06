@@ -662,7 +662,42 @@ if __name__ == '__main__':
               align-items: flex-start;
               gap: 20px;
               width: 100%;
-              height: calc(100vh - 7em);
+              height: calc(100vh - 6em);
+            }}
+
+            /*
+             * updateItemSizes() calculates and sets the final displayed width and height of this item.
+             */
+            #keyFrameItem {{
+              flex: 0 1 auto;
+              margin: 0;
+              padding: 0;
+              background: #111;
+              border: 1px solid #555;
+            }}
+
+            #keyFrame {{
+              display: none;
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              margin: 0;
+            }}
+
+            #placeholder {{
+              display: block;
+              width: 100%;
+              height: {frame_height}px;
+              margin: 0;
+              padding: 5px;
+              color: #777;
+            }}
+
+            #info {{
+              display: block;
+              color: #aaa;
+              font-family: monospace;
+              margin: 0;
             }}
 
             /*
@@ -716,41 +751,6 @@ if __name__ == '__main__':
             }}
 
             /*
-             * updateItemSizes() calculates and sets the final displayed width and height of this item.
-             */
-            #keyFrameItem {{
-              flex: 0 1 auto;
-              margin: 0;
-              padding: 5px;
-              box-sizing: border-box;
-              background: #111;
-              border: 1px solid #555;
-            }}
-
-            #keyFrame {{
-              display: none;
-              width: 100%;
-              height: 100%;
-              object-fit: contain;
-              margin: 0;
-            }}
-
-            #placeholder {{
-              color: #777;
-            }}
-
-            #info {{
-              display: block;
-              color: #aaa;
-              font-family: monospace;
-              margin: 0;
-            }}
-
-            #spacerItem {{
-              flex: 1 1 auto;
-            }}
-
-            /*
              * On portrait displays, stack the panorama and key frame items vertically.
              */
             @media (orientation: portrait) {{
@@ -762,7 +762,7 @@ if __name__ == '__main__':
               #container {{
                 flex-direction: column;
                 gap: 10px;
-                height: calc(100vh - 6em);
+                height: calc(100vh - 8em);
               }}
 
               #panoramaItem {{
@@ -775,10 +775,6 @@ if __name__ == '__main__':
                 height: auto;
               }}
 
-              #info {{
-                display: none;
-              }}
-
             }}
 
             </style>
@@ -789,6 +785,15 @@ if __name__ == '__main__':
             <h2>Synthesised Panorama Key Frame Viewer</h2>
 
             <div id="container">
+
+              <!-- =========================================================
+                   Key frame item
+                   ========================================================= -->
+
+              <div id="keyFrameItem">
+                <img id="keyFrame" alt="Key frame">
+                <span id="placeholder">Move, tap or drag over the panorama image to view key frames.</span>
+              </div>
 
               <!-- =========================================================
                    Panorama item
@@ -814,22 +819,6 @@ if __name__ == '__main__':
                   Loading map...
                 </div>
 
-              </div>
-
-              <!-- =========================================================
-                   Key frame item
-                   ========================================================= -->
-
-              <div id="keyFrameItem">
-                <img id="keyFrame" alt="Key frame">
-                <span id="placeholder">Move, tap or drag over the panorama image to view key frames.</span>
-              </div>
-
-              <!-- =========================================================
-                   Spacer item
-                   ========================================================= -->
-
-              <div id="spacerItem">
               </div>
 
             </div>
@@ -917,7 +906,6 @@ if __name__ == '__main__':
             const keyFrame = document.getElementById("keyFrame");
             const placeholder = document.getElementById("placeholder");
             const info = document.getElementById("info");
-            const spacerItem = document.getElementById("spacerItem");
 
             /* =================================================================
                Viewer state
@@ -1043,6 +1031,9 @@ if __name__ == '__main__':
               const frameAspectRatio = keyFrameWidth / keyFrameHeight;
               const sourceAspectRatio = sourceWidth / sourceHeight;
 
+              const availableWidth = Math.max(container.clientWidth, 100);
+              const availableHeight = Math.max(container.clientHeight, 100);
+
               /*
                * https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/orientation
                * portrait: viewport height >= width
@@ -1054,11 +1045,7 @@ if __name__ == '__main__':
                  * Allocate 2/3 of the available height to the key frame item and the remainder to the panorama.
                  * Constrain their dimensions to maintain their respective image aspect ratios.
                  */
-                const availableWidth = Math.max(container.clientWidth, 100);
-                const availableHeight = Math.max(panoramaItem.clientHeight + keyFrameItem.clientHeight
-                                                 + spacerItem.clientHeight + 10, 100);
-
-                const frameAvailableHeight = Math.max(2 / 3 * availableHeight, 100);
+                const frameAvailableHeight = 2 / 3 * availableHeight;
 
                 frameDisplayWidth = Math.min(availableWidth, keyFrameWidth);
                 frameDisplayHeight = frameDisplayWidth / frameAspectRatio;
@@ -1082,11 +1069,7 @@ if __name__ == '__main__':
                  * Allocate 2/3 of the available width to the key frame item and the remainder to the panorama.
                  * Constrain their dimensions to maintain their respective image aspect ratios.
                  */
-                const availableHeight = Math.max(container.clientHeight, 100);
-                const availableWidth = Math.max(panoramaItem.clientWidth + keyFrameItem.clientWidth
-                                                + spacerItem.clientWidth + 20, 100);
-
-                const frameAvailableWidth = Math.max(2 / 3 * availableWidth, 100);
+                const frameAvailableWidth = 2 / 3 * availableWidth;
 
                 frameDisplayHeight = Math.min(availableHeight, keyFrameHeight);
                 frameDisplayWidth = frameDisplayHeight * frameAspectRatio;
@@ -1110,10 +1093,10 @@ if __name__ == '__main__':
               /*
                * Set the item dimensions.
                */
-              keyFrameItem.style.width = Math.round(frameDisplayWidth) + "px";
-              keyFrameItem.style.height = Math.round(frameDisplayHeight) + "px";
-              panoramaItem.style.width = Math.round(sourceDisplayWidth) + "px";
-              panoramaItem.style.height = Math.round(sourceDisplayHeight) + "px";
+              keyFrameItem.style.width = frameDisplayWidth + "px";
+              keyFrameItem.style.height = frameDisplayHeight + "px";
+              panoramaItem.style.width = sourceDisplayWidth + "px";
+              panoramaItem.style.height = sourceDisplayHeight + "px";
             }}
 
             /*
@@ -1218,6 +1201,14 @@ if __name__ == '__main__':
                 previousIndex = null;
                 info.textContent = "Move, tap or drag over the panorama image to view key frames.";
               }}
+            }});
+
+            /* =================================================================
+               Disable browser context menu on panorama
+               ================================================================= */
+
+            panorama.addEventListener("contextmenu", function(e) {{
+              e.preventDefault();
             }});
 
             </script>
