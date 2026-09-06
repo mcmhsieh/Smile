@@ -690,6 +690,7 @@ if __name__ == '__main__':
               height: {frame_height}px;
               margin: 0;
               padding: 5px;
+              box-sizing: border-box;
               color: #777;
             }}
 
