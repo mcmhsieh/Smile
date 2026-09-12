@@ -35,6 +35,13 @@ import cv2
 import open3d as o3d
 import torch
 
+# Windows 11 25H2 removed WMIC, so joblib.externals.loky.backend.context.cpu_count() issues
+# UserWarning: Could not find the number of physical cores for the following reason: [WinError 2] The system cannot find the file specified
+# Workaround by using psutil to set physical_cores_cache
+import joblib.externals.loky.backend.context
+import psutil
+joblib.externals.loky.backend.context.physical_cores_cache = psutil.cpu_count(logical=False)
+
 import IPython
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
@@ -199,47 +206,6 @@ if __name__ == '__main__':
 
     # %%
 
-    interframe_angles = []
-    for primary_frame_camera_extrinsic in camera_extrinsics:
-        interframe_angles.append([])
-        for secondary_frame_camera_extrinsic in camera_extrinsics:
-            camera_transform = secondary_frame_camera_extrinsic @ np.linalg.inv(primary_frame_camera_extrinsic)
-            rvec, _ = cv2.Rodrigues(camera_transform[:3, :3])
-            # Ignore rotation around the z-axis (in the primary frame of reference)
-            interframe_angles[-1].append(np.linalg.norm(rvec[:2]))
-    interframe_angles = np.array(interframe_angles)
-
-    # TODO: some of the interframe_confidences may need to be recalculated depending on whether
-    #       the original camera transform estimate, reprojection of points, epipolar lines or rectification
-    #       changed significantly after optimisation
-    interframe_confidences = np.full((len(key_frame_indices),) * 2, fill_value=np.nan, dtype=np.float32)
-    interframe_num_disparities = np.full((len(key_frame_indices),) * 2, fill_value=np.nan, dtype=np.float32)
-    for (cross_frame_idx, current_frame_idx), (img_size_trim, rect_proximity,
-                                               min_disparity, max_disparity, num_disparities,
-                                               disparity_confidence_map, filtered_disparity_confidence_map,
-                                               cross_triangulated_image_points) in cross_stitch_disparity_confidence_maps.items():
-
-        pad_width = 16
-        image_mask = np.full(np.array(filtered_disparity_confidence_map.shape[:2]) + pad_width * 2, fill_value=0, dtype=np.uint8)
-        image_points = np.round(cross_triangulated_image_points).astype(int) + pad_width
-        image_mask[image_points[:, 1], image_points[:, 0]] = 1
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-        image_mask = cv2.morphologyEx(image_mask, op=cv2.MORPH_CLOSE, kernel=kernel,
-                                      iterations=1, borderType=cv2.BORDER_CONSTANT, borderValue=0)
-
-        image_mask_idxs = np.where(image_mask[pad_width:-pad_width, pad_width:-pad_width])
-
-        if np.array(image_mask_idxs).size > 0:
-            filtered_confidence_values = filtered_disparity_confidence_map[*image_mask_idxs]
-            interframe_confidences[cross_frame_idx, current_frame_idx] = np.nansum(filtered_confidence_values) / len(filtered_confidence_values)
-            interframe_confidences[current_frame_idx, cross_frame_idx] = np.nansum(filtered_confidence_values) / len(filtered_confidence_values)
-
-        interframe_num_disparities[cross_frame_idx, current_frame_idx] = num_disparities
-        interframe_num_disparities[current_frame_idx, cross_frame_idx] = num_disparities
-
-    # %%
-
     # Select target view synthesis frames by maximising a function of the frame mesh ray cast grid mapping score
     # and the relative surface area of the frame mesh.
 
@@ -291,24 +257,6 @@ if __name__ == '__main__':
         xy1g = np.vstack([xyg, np.ones(xyg.shape[1],)])
         return xy1g * depth_predictions, xy1g, xg, yg, depth_img, normal_coincidence_img
 
-    path_distances = -np.log(np.clip(interframe_confidences, 1e-2, 1))
-    path_distances[~np.isfinite(path_distances)] = -np.log(1e-2)
-
-    dist_matrix, predecessors = scipy.sparse.csgraph.shortest_path(path_distances, directed=False, return_predecessors=True)
-
-    median_dist_matrix = np.median(dist_matrix, axis=0)
-
-    # TODO: The interframe misalignment varies spatially across the synthetic image, depending on the
-    #       camera planes / rays and the surface normals.
-    #       If possible, iterate / adapt / optimise the surface or ray depth to minimise discontinuities between frames
-    #interframe_misalignments = np.power(dist_matrix, 2) * (1 - cauchy(interframe_angles, np.pi / 4))
-    #interframe_misalignments = np.sqrt(dist_matrix * (1 - cauchy(interframe_angles, np.pi / 4)))
-    #interframe_misalignments = (1 - cauchy(dist_matrix, 0.5)) * (1 - cauchy(interframe_angles, np.pi / 4))
-    #interframe_misalignments = (1 - cauchy(dist_matrix, 0.5)) * np.power(interframe_angles / (np.pi / 9), 2)
-    #interframe_misalignments = (1 - cauchy(dist_matrix, 0.5)) * np.power(interframe_angles / (np.pi / 2), 2)
-    #interframe_misalignments = np.exp(3.0 * dist_matrix) - 1
-    interframe_misalignments = 0.5 * (1 - cauchy(dist_matrix, 0.5)) + 0.5 * (1 - cauchy(interframe_angles, np.pi / 4))
-
     # Compute the projection errors between camera frames and their associated canvas meshes to serve as a cost
     # measure between them when optimising the mapped frame regions and their boundaries for view synthesis
 
@@ -356,42 +304,16 @@ if __name__ == '__main__':
             else:
                 interframe_projection_errors[ref_frame_idx, frame_idx] = np.nan
 
-    #interframe_distances = 1 - cauchy(interframe_projection_errors + interframe_projection_errors.T, 10)
-    #interframe_distances = np.log(1 + interframe_projection_errors + interframe_projection_errors.T)
-
-    #interframe_costs = 1 - np.cos(interframe_angles) + interframe_distances
-    #interframe_costs = 0.5 * np.power(interframe_angles / (np.pi / 2), 2) + interframe_distances
-    #interframe_costs = 0.5 * interframe_misalignments + 0.5 * interframe_distances
-
     symmetric_interframe_projection_errors = np.stack([interframe_projection_errors, interframe_projection_errors.T])
     symmetric_interframe_projection_errors[:, np.all(~np.isfinite(symmetric_interframe_projection_errors), axis=0)] = 0
     interframe_costs = 1 - cauchy(np.nanmean(symmetric_interframe_projection_errors, axis=0), 10)
 
     plt.figure('Interframe costs', figsize=(16, 10))
     plt.clf()
-    ax = plt.subplot(3, 3, 1)
-    plt.imshow(interframe_angles)
-    plt.title('interframe_angles')
-    ax = plt.subplot(3, 3, 2, sharex=ax, sharey=ax)
-    ax.set_facecolor('grey')
-    plt.imshow(interframe_confidences, vmin=-1, vmax=1, cmap='seismic', interpolation='none')
-    plt.title('interframe_confidences')
-    plt.subplot(3, 3, 3, sharex=ax, sharey=ax)
-    plt.imshow(path_distances)
-    plt.title('path_distances')
-    plt.subplot(3, 3, 4, sharex=ax, sharey=ax)
-    plt.imshow(dist_matrix)
-    plt.title('dist_matrix')
-    plt.subplot(3, 3, 5, sharex=ax)
-    plt.plot(median_dist_matrix)
-    plt.title('median_dist_matrix')
-    plt.subplot(3, 3, 6, sharex=ax, sharey=ax)
-    plt.imshow(interframe_misalignments)
-    plt.title('interframe_misalignments')
-    plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
+    ax = plt.subplot(1, 2, 1)
     plt.imshow(interframe_projection_errors)
     plt.title('interframe_projection_errors')
-    plt.subplot(3, 3, 8, sharex=ax, sharey=ax)
+    plt.subplot(1, 2, 2, sharex=ax, sharey=ax)
     plt.imshow(interframe_costs)
     plt.title('interframe_costs')
     plt.tight_layout()
@@ -2147,80 +2069,6 @@ if __name__ == '__main__':
     plt.figure(figsize=(16, 10))
     plt.imshow(interframe_incoherence, vmin=0, vmax=1, cmap='jet', interpolation='none')
     '''
-
-    # %%
-
-    """
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
-
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
-
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
-
-    for frame_idx, camera_extrinsic in enumerate(camera_extrinsics):
-        # The extrinsic matrix transforms from world coordinates to camera coordinates
-        camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                        intrinsic=camera_intrinsic,
-                                                                        extrinsic=camera_extrinsic)
-        camera_lines.paint_uniform_color([0, 0.5, 1])
-        vis.add_geometry(camera_lines, reset_bounding_box=False)
-
-        for prev_frame_idx, prev_camera_extrinsic in enumerate(camera_extrinsics[:frame_idx]):
-            if interframe_confidences[prev_frame_idx, frame_idx] > 0:
-                line_points = np.vstack([np.linalg.inv(prev_camera_extrinsic)[:3, 3], np.linalg.inv(camera_extrinsic)[:3, 3]])
-
-                line_length = np.linalg.norm(np.diff(line_points, axis=0))
-                line_unit_vector = np.diff(line_points, axis=0) / line_length
-
-                rot_cross_vec = np.cross(np.array([0, 0, 1]), line_unit_vector)
-                rot_angle = np.arccos(np.clip(np.array([0, 0, 1]) @ line_unit_vector.T, -1, 1))
-                rot_vec = rot_angle * rot_cross_vec / np.linalg.norm(rot_cross_vec)
-
-                radius = interframe_confidences[prev_frame_idx, frame_idx] * 0.1
-                line_mesh = o3d.geometry.TriangleMesh.create_cylinder(radius=radius, height=line_length)
-                line_mesh.paint_uniform_color([1, 0, 0.5])
-
-                R, _ = cv2.Rodrigues(rot_vec)
-                line_mesh.rotate(R)
-                line_mesh.translate(np.mean(line_points, axis=0))
-
-                vis.add_geometry(line_mesh, reset_bounding_box=False)
-
-    geometry = integrated_merged_rgbd_images_mesh.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
-    vis.add_geometry(geometry, reset_bounding_box=False)
-
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = not vis.poll_events()
-        vis.update_renderer()
-        new_view_status = vis.get_view_status()
-        if new_view_status != view_status:
-            view_status = new_view_status
-            view_status_time = time.time()
-        elif time.time() > view_status_time + visualisation_idle_timeout:
-            close_vis = True
-        if close_vis:
-            break
-
-    vis.destroy_window()
-    """
 
     # %%
 
