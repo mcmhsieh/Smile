@@ -117,12 +117,12 @@ if __name__ == '__main__':
 
     # %%
 
-    input_path = input_source_dirpath / 'depth_images'
-    with shelve.open(input_path) as depth_images:
+    depth_images_input_path = input_source_dirpath / 'depth_images'
+    with shelve.open(depth_images_input_path) as depth_images:
         depth_image_frame_idxs = set(map(int, depth_images.keys()))
 
     for rgbd_frame_idx in depth_image_frame_idxs:
-        with shelve.open(input_path) as depth_images:
+        with shelve.open(depth_images_input_path) as depth_images:
             frame_depth_images = depth_images[str(rgbd_frame_idx)]
         for depth_img, normal_img, confidence_map in frame_depth_images.values():
             assert np.sum(depth_img <= 0) == 0
@@ -295,7 +295,7 @@ if __name__ == '__main__':
                 ref_img = filtered_frame_images[rgbd_frame_idx]
                 depth_imgs = []
                 confidence_maps = []
-                with shelve.open(input_path) as depth_images:
+                with shelve.open(depth_images_input_path) as depth_images:
                     frame_depth_images = depth_images[str(rgbd_frame_idx)]
                 for depth_img, normal_img, confidence_map in frame_depth_images.values():
                     # Depth values larger than depth_trunc are truncated to 0
