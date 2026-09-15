@@ -7,6 +7,7 @@ SPDX-FileCopyrightText: 2026 Mark Hsieh
 SPDX-License-Identifier: MIT
 """
 
+import sys
 import argparse
 import pathlib
 import subprocess
@@ -21,7 +22,6 @@ import tkinter as tk
 from tkinter import ttk
 
 
-PYTHON_EXE_PATH = r'../env/Scripts/python.exe'
 PIPELINE_SERVER_FILEPATH = __file__
 # Note that localhost is slow to resolve
 SERVER_NAME = '127.0.0.1'
@@ -67,7 +67,7 @@ def start_pipeline_server():
     # Create an independent / daemon process by starting a child process and exiting this parent process.
     # For some reason, creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     # still creates a child process within the process tree.
-    subprocess.Popen([PYTHON_EXE_PATH, PIPELINE_SERVER_FILEPATH])
+    subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH])
     start_time = time.time()
     while True:
         try:
@@ -150,4 +150,4 @@ if __name__ == '__main__':
         threading.Thread(target=httpd_main, args=(window,), daemon=True).start()
         window.mainloop()
     else:
-        subprocess.Popen([PYTHON_EXE_PATH, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'])
+        subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'])
