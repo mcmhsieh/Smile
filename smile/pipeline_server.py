@@ -14,6 +14,7 @@ import subprocess
 import threading
 import queue
 import functools
+import socket
 import http.server
 import time
 import json
@@ -29,10 +30,21 @@ SERVER_PORT = 8081
 
 class PipelineServer(http.server.HTTPServer):
     def __init__(self, *args, window=None, **kwargs):
-        self.allow_reuse_address = False
         self.pipeline_queue = {}
         self.window = window
         super().__init__(*args, **kwargs)
+
+    def server_bind(self, *args, **kwargs):
+        if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+            # Unlike Linux, on Windows the SO_REUSEADDR option forcibly binds sockets
+            # when they are in any state, not just TIME_WAIT.
+            # Apply SO_EXCLUSIVEADDRUSE instead of SO_REUSEADDR.
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            # Set SO_REUSEADDR option to bind to sockets in TIME_WAIT state
+            self.allow_reuse_address = True
+        super().server_bind(*args, **kwargs)
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -50,16 +62,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         else:
             del self.server.pipeline_queue[workspace_stage]
             if len(self.server.pipeline_queue) == 0:
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
                 self.server.window.schedule_destroy()
         self.server.window.schedule_update(self.server.pipeline_queue)
         self.send_response(200)
         self.end_headers()
 
-def httpd_main(window):
+def httpd_main(httpd):
     try:
-        with PipelineServer((SERVER_NAME, SERVER_PORT), RequestHandler, window=window) as httpd:
-            httpd.serve_forever()
+        httpd.serve_forever()
     finally:
         window.schedule_destroy()
 
@@ -145,9 +155,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.start_as_daemon:
-        # Run Tk App in the main process thread and HTTPD in a daemon thread
+        # Run Tk App in the main process thread and HTTPD in a worker thread
         window = App()
-        threading.Thread(target=httpd_main, args=(window,), daemon=True).start()
-        window.mainloop()
+        with PipelineServer((SERVER_NAME, SERVER_PORT), RequestHandler, window=window) as httpd:
+            httpd_thread = threading.Thread(target=httpd_main, args=(httpd,))
+            httpd_thread.start()
+            try:
+                window.mainloop()
+            finally:
+                window.terminating = True
+                httpd.shutdown()
+                httpd_thread.join()
     else:
         subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'])
