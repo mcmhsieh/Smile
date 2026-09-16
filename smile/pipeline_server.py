@@ -10,6 +10,7 @@ SPDX-License-Identifier: MIT
 import sys
 import argparse
 import pathlib
+import platform
 import subprocess
 import threading
 import queue
@@ -157,14 +158,24 @@ if __name__ == '__main__':
     if args.start_as_daemon:
         # Run Tk App in the main process thread and HTTPD in a worker thread
         window = App()
-        with PipelineServer((SERVER_NAME, SERVER_PORT), RequestHandler, window=window) as httpd:
-            httpd_thread = threading.Thread(target=httpd_main, args=(httpd,))
-            httpd_thread.start()
-            try:
-                window.mainloop()
-            finally:
-                window.terminating = True
-                httpd.shutdown()
-                httpd_thread.join()
+        try:
+            with PipelineServer((SERVER_NAME, SERVER_PORT), RequestHandler, window=window) as httpd:
+                httpd_thread = threading.Thread(target=httpd_main, args=(httpd,))
+                httpd_thread.start()
+                try:
+                    window.mainloop()
+                finally:
+                    window.terminating = True
+                    httpd.shutdown()
+                    httpd_thread.join()
+        except OSError as e:
+            if e.errno == {'Windows': 10048, 'Linux': 98, 'Darwin': 48}[platform.system()]:
+                # [WinError 10048] Only one usage of each socket address (protocol/network address/port) is normally permitted
+                # [Errno 98] Address already in use
+                # [Errno 48] Address already in use
+                print('Pipeline server socket address is already in use.')
+                print('--- Exiting this pipeline server instance ---')
+            else:
+                raise
     else:
         subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'])
