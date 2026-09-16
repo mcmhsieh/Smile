@@ -399,7 +399,7 @@ if __name__ == '__main__':
 
         trimmed_canvas_mesh.triangle_uvs = o3d.utility.Vector2dVector(uvs[:, np.array(trimmed_canvas_mesh.triangles).flatten()].T)
 
-        trimmed_canvas_mesh.triangle_material_ids = o3d.utility.IntVector(np.zeros((len(trimmed_canvas_mesh.triangles),), dtype=int))
+        trimmed_canvas_mesh.triangle_material_ids = o3d.utility.IntVector(np.zeros((len(trimmed_canvas_mesh.triangles),), dtype=np.int32))
         trimmed_canvas_mesh.textures = [o3d.geometry.Image(material_image)]
 
         if False:
