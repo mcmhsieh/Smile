@@ -447,7 +447,7 @@ if __name__ == '__main__':
                                                            method='linear', bounds_error=False, fill_value=np.nan)
 
         xsp, ysp = key_frame_image_sample_points[current_key_frame_idx]
-        xysn = interp((ysp, xsp))
+        xysn = interp((ysp, xsp)).astype(np.complex64)
         xsn, ysn = xysn.real, xysn.imag
         # Mask out a margin around the edge of the image where the flow estimation is less reliable
         # TODO: check for correspondence between optical flow estimates and disparity based flow estimates, so that
@@ -728,12 +728,12 @@ if __name__ == '__main__':
             interp = scipy.interpolate.RegularGridInterpolator((np.arange(eig_weights.shape[0]), np.arange(eig_weights.shape[1])),
                                                                eig_weights,
                                                                method='linear', bounds_error=True)
-            eig_weights = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs]))
+            eig_weights = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs])).astype(np.complex64)
             eig_vecs = primary_eig_vecs[:, :, 0] + primary_eig_vecs[:, :, 1] * 1j
             interp = scipy.interpolate.RegularGridInterpolator((np.arange(eig_vecs.shape[0]), np.arange(eig_vecs.shape[1])),
                                                                eig_vecs,
                                                                method='linear', bounds_error=True)
-            eig_vecs = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs]))
+            eig_vecs = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs])).astype(np.complex64)
             eig_weights = np.vstack([eig_weights.real, eig_weights.imag,
                                      eig_vecs.real, eig_vecs.imag,
                                      eig_vecs.imag, -eig_vecs.real])
@@ -742,7 +742,9 @@ if __name__ == '__main__':
             triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:3, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
             triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals[:, triangulated_point_idxs]
             camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
+
             normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
+
             camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
             camera_ray_to_image_plane = camera_rays * -triangulated_normals[2, :] / camera_rays[2, :]
 
@@ -777,7 +779,8 @@ if __name__ == '__main__':
         gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
 
         def calc_projected_image_points():
-            model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs)
+            # Select Rodrigues formula with fast=True
+            model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
             object_points = model_Rs @ model_triangulated_points_tensor + model_tvecs
 
             xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)

@@ -26,11 +26,19 @@ import numpy as np
 import scipy
 import sklearn.cluster
 import sklearn.mixture
+import rsatoolbox
 import skimage
 import networkx
 import cv2
 import open3d as o3d
 import torch
+
+# Windows 11 25H2 removed WMIC, so joblib.externals.loky.backend.context.cpu_count() issues
+# UserWarning: Could not find the number of physical cores for the following reason: [WinError 2] The system cannot find the file specified
+# Workaround by using psutil to set physical_cores_cache
+import joblib.externals.loky.backend.context
+import psutil
+joblib.externals.loky.backend.context.physical_cores_cache = psutil.cpu_count(logical=False)
 
 import IPython
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
@@ -192,6 +200,204 @@ if __name__ == '__main__':
 
     # %%
 
+    interframe_angles = []
+    interframe_orbit_arc_curvature = []
+    interframe_triangulated_overlap = []
+    for primary_frame_idx, primary_frame_camera_extrinsic in enumerate(camera_extrinsics):
+        interframe_angles.append([])
+        interframe_orbit_arc_curvature.append([])
+        interframe_triangulated_overlap.append([])
+        for secondary_frame_idx, secondary_frame_camera_extrinsic in enumerate(camera_extrinsics):
+            camera_transform = secondary_frame_camera_extrinsic @ np.linalg.inv(primary_frame_camera_extrinsic)
+
+            rvec, _ = cv2.Rodrigues(camera_transform[:3, :3])
+            # Ignore rotation around the z-axis (in the primary frame of reference)
+            interframe_angles[-1].append(np.linalg.norm(rvec[:2]))
+
+            R = camera_transform[:3, :3]
+            t = camera_transform[:3, 3:]
+            # The primary image plane origin is located in the secondary frame at R @ [0, 0, 0] + t = t.
+            # In the secondary frame, the z = t plane (parallel to secondary image plane) intersects the z axis at [0, 0, t[2]].
+            # Transform [0, 0, t[2]] back to the primary frame where positive z / depth values correspond to
+            # the degree of curvature of camera arc movement in orbit around the object in view.
+            # Conversely, zero and negative z / depth values correspond to panoramic sweep / pan camera movement.
+            interframe_orbit_arc_curvature[-1].append((R.T @ np.array([[0, 2, t[2, 0]]]).T - R.T @ t)[2, 0])
+
+            # Extract the indices of the common set of triangulated points between the primary and secondary frames
+            xsc, ysc = key_frame_image_sample_points[primary_frame_idx]
+            primary_image_points = np.vstack([xsc, ysc])
+            primary_image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[primary_frame_idx]
+            primary_triangulated_image_idxs = np.where(primary_image_to_triangulated_point_idxs >= 0)[0]
+            primary_triangulated_idxs = primary_image_to_triangulated_point_idxs[primary_triangulated_image_idxs]
+            valid_mask = np.all(np.isfinite(model_triangulated_points[:3, primary_triangulated_idxs]), axis=0)
+            primary_triangulated_image_idxs = primary_triangulated_image_idxs[valid_mask]
+            primary_triangulated_idxs = primary_triangulated_idxs[valid_mask]
+            primary_triangulated_idxs_to_image_idxs = dict(zip(primary_triangulated_idxs, primary_triangulated_image_idxs))
+
+            secondary_image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[secondary_frame_idx]
+            secondary_triangulated_image_idxs = np.where(secondary_image_to_triangulated_point_idxs >= 0)[0]
+            secondary_triangulated_idxs = secondary_image_to_triangulated_point_idxs[secondary_triangulated_image_idxs]
+
+            common_triangulated_idxs = np.array(list(set(list(primary_triangulated_idxs)) & set(list(secondary_triangulated_idxs))), dtype=int)
+
+            primary_triangulated_image_idxs = list(map(primary_triangulated_idxs_to_image_idxs.get, common_triangulated_idxs))
+            primary_triangulated_image_points = primary_image_points[:, primary_triangulated_image_idxs].T
+
+            pad_width = 16
+            image_mask = np.full(np.array(image_size[::-1]) + pad_width * 2, fill_value=0, dtype=np.uint8)
+            image_points = np.round(primary_triangulated_image_points).astype(int) + pad_width
+            image_mask[image_points[:, 1], image_points[:, 0]] = 1
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            image_mask = cv2.morphologyEx(image_mask, op=cv2.MORPH_CLOSE, kernel=kernel,
+                                          iterations=1, borderType=cv2.BORDER_CONSTANT, borderValue=0)
+
+            image_mask_idxs = np.where(image_mask[pad_width:-pad_width, pad_width:-pad_width])
+
+            interframe_triangulated_overlap[-1].append(np.array(image_mask_idxs).shape[1] / np.prod(image_size))
+
+    interframe_angles = np.array(interframe_angles)
+    interframe_orbit_arc_curvature = np.array(interframe_orbit_arc_curvature)
+    interframe_triangulated_overlap = np.array(interframe_triangulated_overlap)
+
+    plt.figure('Interframe dissimilarities', figsize=(16, 10))
+    plt.clf()
+    ax = plt.subplot(2, 3, 1)
+    plt.imshow(interframe_angles)
+    plt.title('interframe_angles')
+    ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+    vmaxabs = np.max(np.abs(interframe_orbit_arc_curvature))
+    plt.imshow(interframe_orbit_arc_curvature, vmin=-vmaxabs, vmax=vmaxabs, cmap='seismic')
+    plt.title('interframe_orbit_arc_curvature')
+    ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+    plt.imshow(interframe_triangulated_overlap, vmin=0, vmax=1, cmap='jet', interpolation='none')
+    plt.title('interframe_triangulated_overlap')
+    plt.subplot(2, 3, 3)
+    plt.tight_layout()
+
+    # %%
+
+    symmetric_interframe_orbit_arc_curvature = 0.5 * (interframe_orbit_arc_curvature + interframe_orbit_arc_curvature.T)
+    symmetric_interframe_triangulated_overlap = 0.5 * (interframe_triangulated_overlap + interframe_triangulated_overlap.T)
+
+    interframe_dissimilarities = 0.5 * (1 + scipy.special.erf((symmetric_interframe_orbit_arc_curvature - 1.5) / (2 / 3)))
+    np.fill_diagonal(interframe_dissimilarities, 0)
+    interframe_dissimilarity_weights = np.sqrt(symmetric_interframe_triangulated_overlap)
+    np.fill_diagonal(interframe_dissimilarity_weights, 1)
+
+    embedding_frame_idxs = np.where(np.sum(interframe_dissimilarity_weights, axis=0) > 1)[0]
+    embedding_dissimilarities = interframe_dissimilarities[embedding_frame_idxs[:, None], embedding_frame_idxs]
+    embedding_weights = interframe_dissimilarity_weights[embedding_frame_idxs[:, None], embedding_frame_idxs]
+
+    non_diag_mask = ~np.identity(len(embedding_frame_idxs), dtype=bool)
+    if np.mean(embedding_dissimilarities) < 1e-8:
+        embedding_dissimilarities[non_diag_mask] = 1e-8
+    if np.mean(embedding_weights[non_diag_mask]) < 1e-8:
+        embedding_weights[non_diag_mask] = 1e-8
+
+    # Higher n_components should converge to an embedding that fits dissimilarities with lower residual errors / stress,
+    # but may not generalise well to missing dissimilarities?
+    # Also the variance of distances (such as Euclidean or Manhattan) between points converges to zero as the number of
+    # dimensions increases https://towardsdatascience.com/curse-of-dimensionality-an-intuitive-exploration-1fbf155e1411/
+    for n_components in [2, 3, 6]:
+        embedding, stress, n_iter = rsatoolbox.util.vis_utils.smacof(embedding_dissimilarities, metric=True, n_components=n_components, n_init=8, n_jobs=-1,
+                                                                     max_iter=300, random_state=0, return_n_iter=True, weight=embedding_weights)
+
+        embedding_costs = np.full((len(key_frame_indices), len(key_frame_indices)), fill_value=np.nan, dtype=np.float32)
+        embedding_costs[embedding_frame_idxs[:, None], embedding_frame_idxs] = sklearn.metrics.euclidean_distances(embedding)
+
+        embedding_cost_values = embedding_costs[~np.identity(embedding_costs.shape[0], dtype=bool)]
+        embedding_cost_values = embedding_cost_values[np.isfinite(embedding_cost_values)]
+
+        gm = sklearn.mixture.GaussianMixture(n_components=2, covariance_type='diag', random_state=0)
+        gm.fit(embedding_cost_values[:, None])
+        component_idxs = np.argsort(gm.means_[:, 0])
+
+        # Locate the intersection point between the two Gaussian Mixture component means (if it exists).
+        # There may be no such intersection point if the distribution is fundamentally unimodal - this
+        # commonly arises when the number of key frames is small.
+        # https://stackoverflow.com/questions/22579434/python-finding-the-intersection-point-of-two-gaussian-curves
+        a = 1 / (2 * gm.covariances_[component_idxs[0], 0]) - 1 / (2 * gm.covariances_[component_idxs[1], 0])
+        b = (gm.means_[component_idxs[1], 0] / gm.covariances_[component_idxs[1], 0]
+             - gm.means_[component_idxs[0], 0] / gm.covariances_[component_idxs[0], 0])
+        c = (np.power(gm.means_[component_idxs[0], 0], 2) / (2 * gm.covariances_[component_idxs[0], 0])
+             - np.power(gm.means_[component_idxs[1], 0], 2) / (2 * gm.covariances_[component_idxs[1], 0])
+             - np.log(gm.covariances_[component_idxs[1], 0] / gm.covariances_[component_idxs[0], 0]) / 2
+             - np.log(gm.weights_[component_idxs[0]] / gm.weights_[component_idxs[1]]))
+        gm_intersections = np.roots([a, b, c])
+        inter_idxs = np.where((gm.means_[component_idxs[0], 0] < gm_intersections) & (gm_intersections < gm.means_[component_idxs[1], 0]))[0]
+        gm_component_intersection = gm_intersections[inter_idxs[0]] if len(inter_idxs) == 1 else np.nan
+
+        print('GMM n_components, stress, n_iter, gm_component_intersection',
+              n_components, stress, n_iter, gm_component_intersection)
+
+        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+        if n_components == 2:
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(1, 1, 1)
+            plt.plot(*embedding.T, 'o-', alpha=0.5)
+            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                plt.text(*xy, f'{frame_idx}')
+            ax.set_aspect('equal', adjustable='datalim')
+            plt.tight_layout()
+            stash_fig_page()
+        elif n_components >= 3:
+            if n_components > 3:
+                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                mds.fit(embedding)
+                embedding_3d = mds.embedding_
+            else:
+                embedding_3d = embedding
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax3 = plt.subplot(1, 1, 1, projection='3d')
+            ax3.plot(*embedding_3d.T, 'o-', alpha=0.5)
+            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                ax3.text(*xyz, f'{frame_idx}')
+            ax3.set_aspect('equal', adjustable='datalim')
+            ax3.set_xlabel('X')
+            ax3.set_ylabel('Y')
+            ax3.set_zlabel('Z')
+            plt.tight_layout()
+            stash_fig_page()
+
+        plt.figure('Embedding costs', figsize=(16, 10))
+        setup_new_fig_page()
+        plt.suptitle(f'n_components: {n_components}')
+        ax = plt.subplot(2, 3, 1)
+        plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
+        plt.title('interframe_dissimilarities')
+        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+        plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
+        plt.title('interframe_dissimilarity_weights')
+        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+        plt.imshow(embedding_costs, cmap='jet', interpolation='none')
+        plt.title('embedding_costs')
+        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+        plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
+        plt.title('embedding_costs / interframe_dissimilarities')
+        plt.subplot(2, 3, 6)
+        bins = np.linspace(0, 1, 51)
+        plt.hist(embedding_cost_values, bins=bins, density=True)
+        for component_idx in np.argsort(gm.means_[:, 0]):
+            plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
+                                                                             scale=np.sqrt(gm.covariances_[component_idx, 0])))
+        plt.axvline(gm_component_intersection, color='blue', linestyle='--')
+        plt.plot(gm_component_intersection,
+                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
+                                                                       loc=gm.means_[component_idxs[0], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                 'bo')
+        plt.title('embedding_cost_values')
+        plt.tight_layout()
+        stash_fig_page()
+
+    # %%
+
     # TODO: Optimise with e.g. PyTorch, CuPy, JAX, PyCUDA, Numba. An example approach to consider:
     #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/fusion.py
     #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/demo.py
@@ -285,12 +491,8 @@ if __name__ == '__main__':
         tsdf_weight_colour[1, :] = 1e-6
 
         for rgbd_frame_idx in depth_image_frame_idxs:
-            camera_transform = camera_extrinsics[rgbd_frame_idx] @ np.linalg.inv(synthetic_camera_extrinsic)
-            rvec, _ = cv2.Rodrigues(camera_transform[:3, :3])
-            # Ignore rotation around the z-axis (in the primary frame of reference)
-            rotation_magnitude = np.linalg.norm(rvec[:2])
-            frame_weight = cauchy(rotation_magnitude, np.pi / 4)
-            print(rgbd_frame_idx, np.round(np.rad2deg(rotation_magnitude), 1), np.round(frame_weight, 3))
+            frame_weight = cauchy(embedding_costs[ref_frame_idx, rgbd_frame_idx], 1 / 3)
+            print(rgbd_frame_idx, np.round(np.rad2deg(interframe_angles[ref_frame_idx, rgbd_frame_idx]), 1), np.round(frame_weight, 3))
             if frame_weight > 0.01:
                 ref_img = filtered_frame_images[rgbd_frame_idx]
                 depth_imgs = []
@@ -320,7 +522,7 @@ if __name__ == '__main__':
                     if True:
                         ray_normal_angles = np.arccos(np.clip(np.sum(-rgbd_normals * ref_camera_rays, axis=-1), -1, 1))
 
-                        ray_normal_weight = 0.5 * (1 - scipy.special.erf((ray_normal_angles - 7 / 12 * np.pi) / (np.pi / 12)))
+                        ray_normal_weight = 0.5 * (1 - scipy.special.erf((ray_normal_angles - 8 / 12 * np.pi) / (np.pi / 12)))
 
                         depth_imgs.append(np.nan_to_num(depth_img, nan=0))
                         confidence_maps.append(confidence_map * frame_weight * ray_normal_weight)

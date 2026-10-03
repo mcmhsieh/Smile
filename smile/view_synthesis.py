@@ -548,9 +548,9 @@ if __name__ == '__main__':
                                                         / np.diff(frame_synth_projection_score_bounds) * 3) + 1) / 2
     """
 
-    interframe_synth_projection_scores = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
+    interframe_synth_projection_relative_scores = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
     for ref_frame_idx in range(len(key_frame_indices)):
-        print('Calculating interframe synthetic camera projection scores ref_frame_idx', ref_frame_idx)
+        print('Calculating interframe synthetic camera projection relative scores ref_frame_idx', ref_frame_idx)
 
         img = frame_images[ref_frame_idx]
 
@@ -578,10 +578,16 @@ if __name__ == '__main__':
 
             projection_score_image_diff = projection_score_image_warp - frame_synth_projection_score_images[ref_frame_idx]
             if np.any(np.isfinite(projection_score_image_diff)):
-                interframe_synth_projection_scores[ref_frame_idx, frame_idx] = np.cbrt(np.nanmean(np.power(projection_score_image_diff, 3)))
+                # Apply greater weighting to e.g. ref 1.0 -> warp 0.5 than ref 0.5 -> warp 0.0
+                reductions = (projection_score_image_diff * frame_synth_projection_score_images[ref_frame_idx])[projection_score_image_diff < 0]
+                # Apply greater weighting to e.g. ref 0.5 -> warp 1.0 than ref 0.0 -> warp 0.5
+                increases = (projection_score_image_diff * projection_score_image_warp)[projection_score_image_diff >= 0]
+                relative_scores = np.hstack([reductions, increases])
+                if len(relative_scores) > 0:
+                    interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = np.mean(relative_scores) / max(np.std(relative_scores), 1e-2)
 
             """
-            plt.figure('Interframe synthetic projection scores', figsize=(16, 10))
+            plt.figure('Interframe synthetic projection relative scores', figsize=(16, 10))
             setup_new_fig_page()
             plt.suptitle(f'ref_frame_idx, frame_idx: {ref_frame_idx}, {frame_idx}')
             ax = plt.subplot(2, 2, 1)
@@ -598,33 +604,39 @@ if __name__ == '__main__':
 
     # %%
 
+    # Optimise a 1D array representing frame synthesis projection scores: model_frame_synth_projection_scores
+    # from the 2D interframe synthesis projection relative scores: interframe_synth_projection_relative_scores
+
     frame_synth_projection_score_image_means = [np.nanmean(frame_synth_projection_score_image)
                                                 for frame_synth_projection_score_image in frame_synth_projection_score_images]
 
     interframe_support = cauchy(interframe_canvas_projection_errors, 20) * interframe_canvas_projection_error_weights
     model_interframe_support = torch.tensor(interframe_support, dtype=torch.float32)
-    model_interframe_synth_projection_scores = torch.tensor(interframe_synth_projection_scores, dtype=torch.float32)
-    model_frame_synth_projection_weights = torch.tensor(frame_synth_projection_score_image_means, dtype=torch.float32, requires_grad=True)
-    model_frame_synth_projection_score_scaling = torch.tensor(1, dtype=torch.float32, requires_grad=True)
+    model_interframe_synth_projection_relative_scores = torch.tensor(interframe_synth_projection_relative_scores, dtype=torch.float32)
+    model_interframe_synth_projection_relative_score_scaling = torch.tensor(1, dtype=torch.float32, requires_grad=True)
+    model_frame_synth_projection_scores = torch.tensor(frame_synth_projection_score_image_means, dtype=torch.float32, requires_grad=True)
 
     def loss_fn():
         loss_components = {}
 
-        model_frame_synth_projection_weights_sigmoid = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_weights - 0.5))
-        model_interframe_synth_projection_weight_targets = model_frame_synth_projection_weights[:, None] + model_frame_synth_projection_score_scaling * model_interframe_synth_projection_scores
-        model_interframe_synth_projection_weight_targets_sigmoid = torch.nn.functional.sigmoid(4 * (model_interframe_synth_projection_weight_targets - 0.5))
-        model_frame_synth_projection_weight_errors = model_frame_synth_projection_weights_sigmoid - model_interframe_synth_projection_weight_targets_sigmoid
+        # Calculate predicted projection scores for all frames given the model frame scores
+        conditional_frame_synth_projection_score_predictions = model_frame_synth_projection_scores[:, None] + model_interframe_synth_projection_relative_score_scaling * model_interframe_synth_projection_relative_scores
+        conditional_frame_synth_projection_score_predictions_sigmoid = torch.nn.functional.sigmoid(4 * (conditional_frame_synth_projection_score_predictions - 0.5))
+        # Compute the errors between predicted projection scores and model frame scores
+        # error(f1, f2) = predicted_score(f2 | f1) - model_score(f2)
+        model_frame_synth_projection_scores_sigmoid = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_scores - 0.5))
+        model_frame_synth_projection_score_errors = model_frame_synth_projection_scores_sigmoid - conditional_frame_synth_projection_score_predictions_sigmoid
 
-        loss_components['errors'] = model_interframe_support * torch.pow(model_frame_synth_projection_weight_errors, 2)
+        loss_components['errors'] = model_interframe_support * torch.pow(model_frame_synth_projection_score_errors, 2)
 
-        loss_components['mean'] = 1e-2 * torch.pow(torch.mean(model_frame_synth_projection_weights) - np.mean(frame_synth_projection_score_image_means), 2)
+        loss_components['mean'] = 1e-2 * torch.pow(torch.mean(model_frame_synth_projection_scores) - np.mean(frame_synth_projection_score_image_means), 2)
         #exp_factor = 100
-        #weights_apex = (torch.logsumexp(exp_factor * model_frame_synth_projection_weights, dim=0) - np.log(model_frame_synth_projection_weights.shape[0])) / exp_factor
+        #weights_apex = (torch.logsumexp(exp_factor * model_frame_synth_projection_scores, dim=0) - np.log(model_frame_synth_projection_scores.shape[0])) / exp_factor
         # The ceiling loss has a minimum at weights_apex = 1.0 where d(ceiling loss)/d(weights_apex) = 0
         #loss_components['ceiling'] = 1e-3 * (-34 * weights_apex + torch.pow(weights_apex, 2) + torch.pow(weights_apex, 32))
-        loss_components['floor'] = 2e-3 / model_frame_synth_projection_weights_sigmoid
-        loss_components['ceiling'] = 1e-3 / (1 - model_frame_synth_projection_weights_sigmoid)
-        loss_components['scaling'] = 2e-2 * -torch.log(model_frame_synth_projection_score_scaling)
+        loss_components['floor'] = 2e-3 / model_frame_synth_projection_scores_sigmoid
+        loss_components['ceiling'] = 1e-3 / (1 - model_frame_synth_projection_scores_sigmoid)
+        loss_components['scaling'] = 2e-2 * -torch.log(model_interframe_synth_projection_relative_score_scaling)
 
         return sum(torch.mean(loss_component) for loss_component in loss_components.values()), loss_components
 
@@ -632,7 +644,7 @@ if __name__ == '__main__':
         lr = 0.005
         num_steps = 3000
         convergence_criterion = {'atol': 1e-5, 'window_size': 100, 'min_num_steps': 300}
-        optimiser = torch.optim.Adam([model_frame_synth_projection_weights, model_frame_synth_projection_score_scaling], lr=lr)
+        optimiser = torch.optim.Adam([model_frame_synth_projection_scores, model_interframe_synth_projection_relative_score_scaling], lr=lr)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
@@ -658,7 +670,7 @@ if __name__ == '__main__':
         lr = 0.005
         num_steps = 3000
         convergence_criterion = {'atol': 1e-5, 'window_size': 100, 'min_num_steps': 300}
-        optimiser = torch.optim.Adam([model_frame_synth_projection_weights, model_frame_synth_projection_score_scaling], lr=lr)
+        optimiser = torch.optim.Adam([model_frame_synth_projection_scores, model_interframe_synth_projection_relative_score_scaling], lr=lr)
         losses = []
         loss_components = {}
         for optim_step in range(num_steps):
@@ -673,7 +685,8 @@ if __name__ == '__main__':
             if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['atol']:
                 break
 
-    frame_synth_projection_weights = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_weights - 0.5)).numpy(force=True)
+    with torch.no_grad():
+        frame_synth_projection_scores = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_scores - 0.5)).numpy(force=True)
 
     plt.figure('Interframe canvas projection errors', figsize=(16, 10))
     plt.clf()
@@ -688,19 +701,19 @@ if __name__ == '__main__':
     plt.plot(frame_synth_projection_scores)
     plt.title('frame_synth_projection_scores')
     plt.subplot(2, 2, 4, sharex=ax)
-    plt.plot(frame_synth_projection_weights)
+    plt.plot(frame_synth_projection_scores)
     plt.ylim((-0.05, 1.05))
-    plt.title('frame_synth_projection_weights')
+    plt.title('frame_synth_projection_scores')
     """
     ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
-    vmaxabs = np.max(np.abs(interframe_synth_projection_scores))
-    plt.imshow(interframe_synth_projection_scores, cmap='seismic', vmin=-vmaxabs, vmax=vmaxabs)
-    plt.title('interframe_synth_projection_scores')
+    vmaxabs = np.max(np.abs(interframe_synth_projection_relative_scores))
+    plt.imshow(interframe_synth_projection_relative_scores, cmap='seismic', vmin=-vmaxabs, vmax=vmaxabs)
+    plt.title('interframe_synth_projection_relative_scores')
     plt.subplot(2, 2, 4)
-    plt.plot(frame_synth_projection_weights)
+    plt.plot(frame_synth_projection_scores)
     plt.plot(frame_synth_projection_score_image_means, ':')
-    plt.plot(np.sum(interframe_synth_projection_scores * interframe_support, axis=0) / np.sum(interframe_support, axis=0), '-.')
-    plt.title('frame_synth_projection_weights')
+    plt.plot(np.sum(interframe_synth_projection_relative_scores * interframe_support, axis=0) / np.sum(interframe_support, axis=0), '-.')
+    plt.title('frame_synth_projection_scores')
     plt.tight_layout()
 
     # %%
@@ -708,9 +721,9 @@ if __name__ == '__main__':
     # Select target frames by optimising a regularised interframe support loss function
 
     model_interframe_support = torch.tensor(interframe_support, dtype=torch.float32)
-    model_frame_synth_projection_weights = torch.tensor(frame_synth_projection_weights, dtype=torch.float32)
-    model_target_frames = torch.tensor(np.zeros_like(frame_synth_projection_weights), dtype=torch.float32, requires_grad=True)
-    #model_target_frames = torch.tensor(np.random.uniform(low=-0.1, high=0.1, size=frame_synth_projection_weights.shape), dtype=torch.float32, requires_grad=True)
+    model_frame_synth_projection_scores = torch.tensor(frame_synth_projection_scores, dtype=torch.float32)
+    model_target_frames = torch.tensor(np.zeros_like(frame_synth_projection_scores), dtype=torch.float32, requires_grad=True)
+    #model_target_frames = torch.tensor(np.random.uniform(low=-0.1, high=0.1, size=frame_synth_projection_scores.shape), dtype=torch.float32, requires_grad=True)
 
     def loss_fn(temperature):
         target_frame_activations = torch.nn.functional.sigmoid(model_target_frames)
@@ -725,12 +738,12 @@ if __name__ == '__main__':
         exp_factor = 100
         activated_frame_support = (torch.logsumexp(exp_factor * target_frame_activations[:, None] * model_interframe_support, dim=0) - np.log(target_frame_activations.shape[0])) / exp_factor
         #loss_components['exclusion'] = torch.exp(-0.5 * torch.pow(activated_frame_support / (threshold / 3), 2))
-        loss_components['exclusion'] = torch.exp(-3.0 * activated_frame_support) * model_frame_synth_projection_weights
+        loss_components['exclusion'] = torch.exp(-3.0 * activated_frame_support) * model_frame_synth_projection_scores
 
         # Activation loss is low if either
         # - the frame is not active (target_frame_activations is low), or
-        # - model_frame_synth_projection_weights is high when the frame is active (target_frame_activations is high)
-        loss_components['activations'] = 5.0 * (1 - temperature) * target_frame_activations * torch.exp(-1.5 * model_frame_synth_projection_weights)
+        # - model_frame_synth_projection_scores is high when the frame is active (target_frame_activations is high)
+        loss_components['activations'] = 5.0 * (1 - temperature) * target_frame_activations * torch.exp(-1.5 * model_frame_synth_projection_scores)
 
         if False:
             sigma = 0.1
@@ -833,10 +846,10 @@ if __name__ == '__main__':
     plt.legend()
     plt.title('interframe_support[target_frame_idxs]')
     plt.subplot(2, 2, 3, sharex=ax)
-    plt.plot(frame_synth_projection_weights)
-    plt.plot(target_frame_idxs, frame_synth_projection_weights[target_frame_idxs], 'o')
+    plt.plot(frame_synth_projection_scores)
+    plt.plot(target_frame_idxs, frame_synth_projection_scores[target_frame_idxs], 'o')
     plt.ylim((-0.05, 1.05))
-    plt.title('frame_synth_projection_weights')
+    plt.title('frame_synth_projection_scores')
     plt.subplot(2, 2, 4, sharex=ax)
     plt.plot(loss_components['exclusion'].numpy(force=True))
     plt.ylim((-0.05, 1.05))
@@ -851,6 +864,12 @@ if __name__ == '__main__':
     embedding_frame_idxs = np.where(np.sum(interframe_dissimilarity_weights, axis=0) > 1)[0]
     embedding_dissimilarities = interframe_dissimilarities[embedding_frame_idxs[:, None], embedding_frame_idxs]
     embedding_weights = interframe_dissimilarity_weights[embedding_frame_idxs[:, None], embedding_frame_idxs]
+
+    non_diag_mask = ~np.identity(len(embedding_frame_idxs), dtype=bool)
+    if np.mean(embedding_dissimilarities) < 1e-8:
+        embedding_dissimilarities[non_diag_mask] = 1e-8
+    if np.mean(embedding_weights[non_diag_mask]) < 1e-8:
+        embedding_weights[non_diag_mask] = 1e-8
 
     # Higher n_components should converge to an embedding that fits dissimilarities with lower residual errors / stress,
     # but may not generalise well to missing dissimilarities?
@@ -896,7 +915,7 @@ if __name__ == '__main__':
             plt.suptitle(f'n_components: {n_components}')
             ax = plt.subplot(1, 1, 1)
             plt.plot(*embedding.T, alpha=0.5)
-            marker_sizes = np.maximum(frame_synth_projection_weights[embedding_frame_idxs], 0) * 180 + 20
+            marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
             for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
                 cluster_mask = target_frame_support_cluster_labels[embedding_frame_idxs] == target_frame_idx
                 plt.scatter(*embedding[cluster_mask, :].T,
@@ -921,7 +940,7 @@ if __name__ == '__main__':
             plt.suptitle(f'n_components: {n_components}')
             ax3 = plt.subplot(1, 1, 1, projection='3d')
             ax3.plot(*embedding_3d.T, alpha=0.5)
-            marker_sizes = np.maximum(frame_synth_projection_weights[embedding_frame_idxs], 0) * 180 + 20
+            marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
             for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
                 cluster_mask = target_frame_support_cluster_labels[embedding_frame_idxs] == target_frame_idx
                 ax3.scatter(*embedding_3d[cluster_mask, :].T,

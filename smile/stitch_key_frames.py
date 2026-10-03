@@ -401,6 +401,7 @@ if __name__ == '__main__':
             retval, R, t, mask, triangulatedPoints = cv2.recoverPose(E, corres_pts_p[inlier_idxs, :], corres_pts_n[inlier_idxs, :],
                                                                      camera_matrix, distanceThresh=1e3, mask=None)
             print('num points from cv2.recoverPose()', retval)
+            print('t from cv2.recoverPose()', t.flatten())
 
             rvec, jacobian = cv2.Rodrigues(R)
             model_rvec = torch.tensor(rvec.T, dtype=torch.float32, requires_grad=True)
@@ -429,7 +430,8 @@ if __name__ == '__main__':
             gamma_softplus_alpha = torch.tensor(2, dtype=torch.float32)
 
             def loss_fn(temperature):
-                R = pytorch3d.transforms.axis_angle_to_matrix(model_rvec)[0, :, :]
+                # Select Rodrigues formula with fast=True
+                R = pytorch3d.transforms.axis_angle_to_matrix(model_rvec, fast=True)[0, :, :]
                 model_tvec_normed = model_tvec / torch.clamp(torch.norm(model_tvec), 1e-6, np.inf)
                 E = R @ torch.linalg.cross(torch.eye(3, dtype=torch.float32), torch.cat([model_tvec_normed] * 3, dim=1).T)
 
@@ -462,7 +464,8 @@ if __name__ == '__main__':
                 #epipolar_line_losses = 1 - 1 / (1 + torch.pow(epipolar_line_distances / threshold * 3.0, 2))
                 epipolar_line_losses = gamma_softplus(epipolar_line_distances, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
 
-                return torch.sum(epipolar_line_losses * xysn_weights[:2, :])
+                return (torch.sum(epipolar_line_losses * xysn_weights[:2, :])
+                        + 0.1 * epipolar_line_losses.shape[1] * torch.pow(model_tvec_normed[2, 0], 2))
 
             lr = 0.005
             num_steps = 3000
@@ -846,12 +849,16 @@ if __name__ == '__main__':
             print('num new triangulation points', len(new_triangulation_idxs))
             print('num new triangulation point inliers', len(new_inlier_triangulation_idxs))
 
+            key_frame_camera_extrinsics.append(camera_transform @ key_frame_camera_extrinsics[current_frame_idx - 1])
+
+
             # Estimate normals for new triangulated points separately from existing stitched triangulated points at this stage
             # because prior to optimisation, the location of the new triangulated points relative to the existing stitched triangulated
             # points is unlikely to be accurate enough to produce reliable normal estimates if their point clouds are combined together.
 
             valid_mask = np.all(np.isfinite(stitched_triangulated_points[:, :3]), axis=1)
             pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(stitched_triangulated_points[valid_mask, :3]))
+            pcd.transform(np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx - 1]))
             pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=64))
             #pcd.orient_normals_to_align_with_direction(orientation_reference=np.array([0, 0, -1]))
             # https://github.com/isl-org/Open3D/blob/v0.18.0/cpp/open3d/geometry/PointCloud.h
@@ -865,7 +872,6 @@ if __name__ == '__main__':
             #pcd.orient_normals_consistent_tangent_plane(**{'k': 30, 'lambda': 0.0, 'cos_alpha_tol': 1.0})
             #if np.mean(np.array(pcd.normals)[:, 2]) > 0:
             #    pcd.normals = o3d.utility.Vector3dVector(-np.array(pcd.normals))
-            pcd.transform(np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx - 1]))
             pcd_points = np.array(pcd.points).T
             pcd_normals = np.array(pcd.normals).T
             normal_ray_alignment = np.zeros((np.sum(valid_mask),), dtype=np.float32)
@@ -884,6 +890,7 @@ if __name__ == '__main__':
                 object_point_ray = object_points / np.clip(np.linalg.norm(object_points, axis=0), 1e-6, np.inf)
                 normal_ray_alignment += np.sum(object_point_ray * object_normals, axis=0) * image_points_weights[valid_mask]
             pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
+            pcd.transform(key_frame_camera_extrinsics[current_frame_idx])
             assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
 
             stitched_triangulated_normals = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
@@ -916,12 +923,11 @@ if __name__ == '__main__':
             camera_fxy = torch.tensor(np.diag(camera_matrix[:2, :2])[:, None], dtype=torch.float32)
             camera_cxy = torch.tensor(camera_matrix[:2, 2:], dtype=torch.float32)
 
-            key_frame_camera_extrinsics.append(camera_transform @ key_frame_camera_extrinsics[current_frame_idx - 1])
-
             inv_camera_extrinsic = np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx])
             R = inv_camera_extrinsic[:3, :3]
             t = inv_camera_extrinsic[:3, 3:]
-            model_triangulated_points = R @ stitched_triangulated_points[:, :3].T + t
+            model_triangulated_points_numpy = R @ stitched_triangulated_points[:, :3].T + t
+            model_triangulated_normals_numpy = R @ stitched_triangulated_normals
 
             # Although including all the camera extrinsics introduces redundant degrees of freedom,
             # this appears to help make the optimisation unbiased to each camera extrinsic.
@@ -975,8 +981,8 @@ if __name__ == '__main__':
                                          eig_vecs.imag, -eig_vecs.real])
                 image_points_weights[:, triangulated_point_idxs] = eig_weights
 
-                triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
-                triangulated_normals = camera_extrinsic[:3, :3] @ stitched_triangulated_normals[:, triangulated_point_idxs]
+                triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points_numpy[:, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
+                triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals_numpy[:, triangulated_point_idxs]
                 camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
 
                 normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
@@ -1005,14 +1011,14 @@ if __name__ == '__main__':
             assert np.all(triangulated_point_mapping_counts > 0)
             # Triangulated points are initialised with two mapped image points, but the second (or a later point) may
             # exit from view or be pruned if it is obscured. However the association with the initial image point is still retained.
-            assert np.all(np.all(~np.isfinite(model_triangulated_points), axis=0) == (triangulated_point_mapping_counts == 1))
-            assert np.all(np.all(np.isfinite(model_triangulated_points), axis=0) == (triangulated_point_mapping_counts >= 2))
+            assert np.all(np.all(~np.isfinite(model_triangulated_points_numpy), axis=0) == (triangulated_point_mapping_counts == 1))
+            assert np.all(np.all(np.isfinite(model_triangulated_points_numpy), axis=0) == (triangulated_point_mapping_counts >= 2))
             bundle_triangulated_point_idxs = np.where(triangulated_point_mapping_counts >= 2)[0]
 
             print('len(bundle_triangulated_point_idxs)', len(bundle_triangulated_point_idxs),
                   'of len(triangulated_point_mapping_counts)', len(triangulated_point_mapping_counts))
 
-            model_triangulated_points = torch.tensor(model_triangulated_points[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
+            model_triangulated_points = torch.tensor(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
             bundle_image_points = torch.tensor(triangulated_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
             bundle_image_points[~torch.isfinite(bundle_image_points)] = 0
             bundle_image_points_weights = torch.tensor(triangulated_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
@@ -1022,7 +1028,8 @@ if __name__ == '__main__':
             gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
 
             def calc_projected_image_points():
-                model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs)
+                # Select Rodrigues formula with fast=True
+                model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
                 object_points = model_Rs @ model_triangulated_points + model_tvecs
 
                 xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
@@ -1056,194 +1063,182 @@ if __name__ == '__main__':
 
                 return torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
 
-            lr = 0.005
-            num_steps = 3000
-            convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-            optimiser = torch.optim.Adam([model_rvecs, model_tvecs, model_triangulated_points], lr=lr)
-            lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
-                                       * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
-            losses = []
-            for optim_step in range(num_steps):
-                optimiser.zero_grad()
-                temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-                loss = loss_fn(temperature)
-                loss.backward()
-                optimiser.step()
-                scheduler.step()
-                losses.append(loss.numpy(force=True))
-                loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
-                if optim_step % 100 == 0:
-                    print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
-                          'learning rate', np.round(scheduler.get_last_lr()[0], 6), 'temperature', np.round(temperature, 3))
-                if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['rtol'] * losses[-1]:
-                    break
+            def bundle_adjustment():
+                lr = 0.005
+                num_steps = 3000
+                convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
+                optimiser = torch.optim.Adam([model_rvecs, model_tvecs, model_triangulated_points], lr=lr)
+                lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
+                                           * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
+                scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
+                losses = []
+                for optim_step in range(num_steps):
+                    optimiser.zero_grad()
+                    temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
+                    loss = loss_fn(temperature)
+                    loss.backward()
+                    optimiser.step()
+                    scheduler.step()
+                    losses.append(loss.numpy(force=True))
+                    loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
+                    if optim_step % 100 == 0:
+                        print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
+                              'learning rate', np.round(scheduler.get_last_lr()[0], 6), 'temperature', np.round(temperature, 3))
+                    if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['rtol'] * losses[-1]:
+                        break
 
-            print('len(losses)', len(losses))
-            print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
-            print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
+                print('len(losses)', len(losses))
+                print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
+                print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
 
-            del key_frame_camera_extrinsics[:]
-            for rvec, tvec in zip(model_rvecs.numpy(force=True), model_tvecs.numpy(force=True)):
-                R, jacobian = cv2.Rodrigues(rvec)
-                t = tvec
-                key_frame_camera_extrinsics.append(np.block([[R, t], [0, 0, 0, 1]]))
+                del key_frame_camera_extrinsics[:]
+                for rvec, tvec in zip(model_rvecs.numpy(force=True), model_tvecs.numpy(force=True)):
+                    R, jacobian = cv2.Rodrigues(rvec)
+                    t = tvec
+                    key_frame_camera_extrinsics.append(np.block([[R, t], [0, 0, 0, 1]]))
 
-            camera_transform = key_frame_camera_extrinsics[current_frame_idx] @ np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx - 1])
-            R = camera_transform[:3, :3]
-            t = camera_transform[:3, 3:]
-            optim_transform_delta_vec = (R @ transform_delta_ref_vec + t - transform_delta_ref_vec).flatten()
-            print('optimised transform delta vec', np.round(optim_transform_delta_vec, 3))
-            torch.set_default_device(torch.device('cpu'))
-            for idx in range(2):
-                print(f'gmm[{idx}] log_prob(optim_transform_delta_vec)', np.round(gmm_distributions[idx].log_probability(optim_transform_delta_vec[None, :]).numpy(), 3))
-            torch.set_default_device(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+                camera_transform = key_frame_camera_extrinsics[current_frame_idx] @ np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx - 1])
+                R = camera_transform[:3, :3]
+                t = camera_transform[:3, 3:]
+                optim_transform_delta_vec = (R @ transform_delta_ref_vec + t - transform_delta_ref_vec).flatten()
+                print('optimised transform delta vec', np.round(optim_transform_delta_vec, 3))
+                torch.set_default_device(torch.device('cpu'))
+                for idx in range(2):
+                    print(f'gmm[{idx}] log_prob(optim_transform_delta_vec)', np.round(gmm_distributions[idx].log_probability(optim_transform_delta_vec[None, :]).numpy(), 3))
+                torch.set_default_device(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 
-            # TODO: calculate and record epipolar inliers as a measure of traction / slip
+                # TODO: calculate and record epipolar inliers as a measure of traction / slip
 
-            if False:
-                current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
-                R = current_camera_extrinsic[:3, :3]
-                t = current_camera_extrinsic[:3, 3:]
-                stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points.numpy(force=True) + t).T
-            else:
-                first_camera_extrinsic = key_frame_camera_extrinsics[0]
-                R = first_camera_extrinsic[:3, :3]
-                t = first_camera_extrinsic[:3, 3:]
-                model_triangulated_points = R @ model_triangulated_points.numpy(force=True) + t
+                if False:
+                    current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
+                    R = current_camera_extrinsic[:3, :3]
+                    t = current_camera_extrinsic[:3, 3:]
+                    stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points.numpy(force=True) + t).T
+                else:
+                    first_camera_extrinsic = key_frame_camera_extrinsics[0]
+                    R = first_camera_extrinsic[:3, :3]
+                    t = first_camera_extrinsic[:3, 3:]
+                    model_triangulated_points_numpy = R @ model_triangulated_points.numpy(force=True) + t
 
-                key_frame_camera_extrinsics[:] = [camera_extrinsic @ np.linalg.inv(first_camera_extrinsic)
-                                                  for camera_extrinsic in key_frame_camera_extrinsics]
+                    key_frame_camera_extrinsics[:] = [camera_extrinsic @ np.linalg.inv(first_camera_extrinsic)
+                                                      for camera_extrinsic in key_frame_camera_extrinsics]
 
-                scaling_factors = []
-                for image_points_weights_magn, camera_extrinsic in zip(torch.norm(bundle_image_points_weights[:, :2, :], dim=1).numpy(force=True),
-                                                                       key_frame_camera_extrinsics):
-                    triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:, image_points_weights_magn >= 1e-2] + camera_extrinsic[:3, 3:]
+                    scaling_factors = []
+                    for image_points_weights_magn, camera_extrinsic in zip(torch.norm(bundle_image_points_weights[:, :2, :], dim=1).numpy(force=True),
+                                                                           key_frame_camera_extrinsics):
+                        triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points_numpy[:, image_points_weights_magn >= 1e-2] + camera_extrinsic[:3, 3:]
 
-                    # Estimate the scaling factor from the depth distribution of the triangulated points
-                    # assuming the camera is positioned at a distance of ~8mm from the target
-                    c = np.percentile(triangulated_points[2, :], 25) / 8.0
-                    scaling_factors.append(c)
-                c = np.median(scaling_factors)
+                        # Estimate the scaling factor from the depth distribution of the triangulated points
+                        # assuming the camera is positioned at a distance of ~8mm from the target
+                        c = np.percentile(triangulated_points[2, :], 25) / 8.0
+                        scaling_factors.append(c)
+                    c = np.median(scaling_factors)
 
-                print('scaling factor', c, np.round(scaling_factors, 2))
-                model_triangulated_points /= c
-                key_frame_camera_extrinsics[:] = [np.block([[camera_extrinsic[:3, :3], camera_extrinsic[:3, 3:] / c], [0, 0, 0, 1]])
-                                                  for camera_extrinsic in key_frame_camera_extrinsics]
+                    print('scaling factor', c, np.round(scaling_factors, 2))
+                    model_triangulated_points_numpy /= c
+                    key_frame_camera_extrinsics[:] = [np.block([[camera_extrinsic[:3, :3], camera_extrinsic[:3, 3:] / c], [0, 0, 0, 1]])
+                                                      for camera_extrinsic in key_frame_camera_extrinsics]
 
-                current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
-                R = current_camera_extrinsic[:3, :3]
-                t = current_camera_extrinsic[:3, 3:]
-                stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points + t).T
+                    current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
+                    R = current_camera_extrinsic[:3, :3]
+                    t = current_camera_extrinsic[:3, 3:]
+                    stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points_numpy + t).T
 
 
-            # Cross stitching / loop closure between each previous frame with the current frame.
-            # Retrace triangulated points that previously moved out of view and lost sequential optical flow tracking,
-            # but have re-entered the current view.
-            # These are the set of unmatched points between each previous cross frame and the current frame.
-            # For each previous cross frame:
-            #  - Calculate and apply the stereo camera rectification transforms corresponding to the camera extrinsic transform
-            #    and compute the disparity map between the rectified images.
-            #  - Derive the cross flow from the disparity map and apply it to map the current frame image onto the cross frame image space.
-            #  - Compute the residual optical flow between the mapped current frame image and the cross frame image and apply the
-            #    residual optical flow vectors to update the location of the cross mapped triangulated point projections.
-            # For each triangulated point, cluster the collection of unmatched cross flow mapped coordinates across all the cross frames.
-            # Stitch the triangulated point if the modal cluster has a small enough variance and its centroid is close enough
-            # to the projected location of the triangulated point in the current frame.
+                current_triangulated_image_idxs = np.where(current_image_to_triangulated_point_idxs >= 0)[0]
+                current_triangulated_idxs = current_image_to_triangulated_point_idxs[current_triangulated_image_idxs]
+                current_triangulated_idxs_to_image_idxs = dict(zip(current_triangulated_idxs, current_triangulated_image_idxs))
 
-            current_triangulated_image_idxs = np.where(current_image_to_triangulated_point_idxs >= 0)[0]
-            current_triangulated_idxs = current_image_to_triangulated_point_idxs[current_triangulated_image_idxs]
-            current_triangulated_idxs_to_image_idxs = dict(zip(current_triangulated_idxs, current_triangulated_image_idxs))
+                valid_mask = np.all(np.isfinite(stitched_triangulated_points[:, :3]), axis=1)
+                pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(stitched_triangulated_points[valid_mask, :3]))
+                pcd.transform(np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx]))
+                pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=64))
+                #pcd.orient_normals_to_align_with_direction(orientation_reference=np.array([0, 0, -1]))
+                # https://github.com/isl-org/Open3D/blob/v0.18.0/cpp/open3d/geometry/PointCloud.h
+                # Function to consistently orient estimated normals based on consistent tangent planes as described in Hoppe et al.,
+                # "Surface Reconstruction from Unorganized Points", 1992.
+                # Further details on parameters are described in Piazza, Valentini, Varetti, "Mesh Reconstruction from Point Cloud", 2023.
+                #  - k: k nearest neighbour for graph reconstruction for normal propagation.
+                #  - lambda: penalty constant on the distance of a point from the tangent plane
+                #  - cos_alpha_tol: threshold that defines the amplitude of the cone spanned by the reference normal
+                # pcd.orient_normals_consistent_tangent_plane tends to invert normals for points not fully aligned with the primary surface
+                #pcd.orient_normals_consistent_tangent_plane(**{'k': 30, 'lambda': 0.0, 'cos_alpha_tol': 1.0})
+                #if np.mean(np.array(pcd.normals)[:, 2]) > 0:
+                #    pcd.normals = o3d.utility.Vector3dVector(-np.array(pcd.normals))
+                pcd_points = np.array(pcd.points).T
+                pcd_normals = np.array(pcd.normals).T
+                normal_ray_alignment = np.zeros((np.sum(valid_mask),), dtype=np.float32)
+                for image_to_triangulated_point_idxs, camera_extrinsic in zip(key_frame_image_triangulated_point_idxs + [current_image_to_triangulated_point_idxs],
+                                                                              key_frame_camera_extrinsics):
+                    triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
+                    triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
+                    image_points_weights = np.zeros((stitched_triangulated_points.shape[0],), dtype=np.float32)
+                    image_points_weights[triangulated_point_idxs] = 1
 
-            valid_mask = np.all(np.isfinite(stitched_triangulated_points[:, :3]), axis=1)
-            pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(stitched_triangulated_points[valid_mask, :3]))
-            pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=64))
-            #pcd.orient_normals_to_align_with_direction(orientation_reference=np.array([0, 0, -1]))
-            # https://github.com/isl-org/Open3D/blob/v0.18.0/cpp/open3d/geometry/PointCloud.h
-            # Function to consistently orient estimated normals based on consistent tangent planes as described in Hoppe et al.,
-            # "Surface Reconstruction from Unorganized Points", 1992.
-            # Further details on parameters are described in Piazza, Valentini, Varetti, "Mesh Reconstruction from Point Cloud", 2023.
-            #  - k: k nearest neighbour for graph reconstruction for normal propagation.
-            #  - lambda: penalty constant on the distance of a point from the tangent plane
-            #  - cos_alpha_tol: threshold that defines the amplitude of the cone spanned by the reference normal
-            # pcd.orient_normals_consistent_tangent_plane tends to invert normals for points not fully aligned with the primary surface
-            #pcd.orient_normals_consistent_tangent_plane(**{'k': 30, 'lambda': 0.0, 'cos_alpha_tol': 1.0})
-            #if np.mean(np.array(pcd.normals)[:, 2]) > 0:
-            #    pcd.normals = o3d.utility.Vector3dVector(-np.array(pcd.normals))
-            pcd.transform(np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx]))
-            pcd_points = np.array(pcd.points).T
-            pcd_normals = np.array(pcd.normals).T
-            normal_ray_alignment = np.zeros((np.sum(valid_mask),), dtype=np.float32)
-            for image_to_triangulated_point_idxs, camera_extrinsic in zip(key_frame_image_triangulated_point_idxs + [current_image_to_triangulated_point_idxs],
-                                                                          key_frame_camera_extrinsics):
-                triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
-                triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
-                image_points_weights = np.zeros((stitched_triangulated_points.shape[0],), dtype=np.float32)
-                image_points_weights[triangulated_point_idxs] = 1
+                    R = camera_extrinsic[:3, :3]
+                    t = camera_extrinsic[:3, 3:]
+                    object_points = R @ pcd_points + t
+                    object_normals = R @ pcd_normals
 
-                R = camera_extrinsic[:3, :3]
-                t = camera_extrinsic[:3, 3:]
-                object_points = R @ pcd_points + t
-                object_normals = R @ pcd_normals
+                    object_point_ray = object_points / np.clip(np.linalg.norm(object_points, axis=0), 1e-6, np.inf)
+                    normal_ray_alignment += np.sum(object_point_ray * object_normals, axis=0) * image_points_weights[valid_mask]
+                pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
+                pcd.transform(key_frame_camera_extrinsics[current_frame_idx])
+                assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
 
-                object_point_ray = object_points / np.clip(np.linalg.norm(object_points, axis=0), 1e-6, np.inf)
-                normal_ray_alignment += np.sum(object_point_ray * object_normals, axis=0) * image_points_weights[valid_mask]
-            pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
-            pcd.transform(key_frame_camera_extrinsics[current_frame_idx])
-            assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
+                stitched_triangulated_normals.fill(np.nan)
+                stitched_triangulated_normals[:, valid_mask] = np.array(pcd.normals).T
 
-            #     z               object-plane
-            #     z             or
-            #     z           o  r
-            #     z         o   r
-            #     z       o     ray-from_camera
-            #     z     o      r
-            #     z   o        r
-            #     z o         r
-            # iiiioiiiiiiiiiiiriiiimage-plane
-            #   o z  n       r
-            # o   z     n    r
-            #     z        nr
-            #     z         r n
-            #     z        r     normal-from-object-plane
+                #     z               object-plane
+                #     z             or
+                #     z           o  r
+                #     z         o   r
+                #     z       o     ray-from_camera
+                #     z     o      r
+                #     z   o        r
+                #     z o         r
+                # iiiioiiiiiiiiiiiriiiimage-plane
+                #   o z  n       r
+                # o   z     n    r
+                #     z        nr
+                #     z         r n
+                #     z        r     normal-from-object-plane
 
-            # The image plane, object plane, object plane normal and z-axis are coincident at oi = on = oz
-            # object-plane section or-oi is projected onto image-plane section ir-oi
-            # Perspective distortion is based on object_to_image_ratio = |or-oi| / |ir-oi|
-            # camera_rays = (or-nr) / |or-nr| = (ir-nr) / |ir-nr|
-            # camera_ray_to_object_plane = or-nr
-            # camera_ray_to_image_plane = ir-nr
+                # The image plane, object plane, object plane normal and z-axis are coincident at oi = on = oz
+                # object-plane section or-oi is projected onto image-plane section ir-oi
+                # Perspective distortion is based on object_to_image_ratio = |or-oi| / |ir-oi|
+                # camera_rays = (or-nr) / |or-nr| = (ir-nr) / |ir-nr|
+                # camera_ray_to_object_plane = or-nr
+                # camera_ray_to_image_plane = ir-nr
 
-            # |nr-oi| = 1
-            # ⇒ (nr-oi) ⋅ (or-nr) = -1
-            # ⇒ |or-nr| = -1 / [(nr-oi) ⋅ (or-nr) / |or-nr|] where (or-nr) / |or-nr| is the unit length camera ray
+                # |nr-oi| = 1
+                # ⇒ (nr-oi) ⋅ (or-nr) = -1
+                # ⇒ |or-nr| = -1 / [(nr-oi) ⋅ (or-nr) / |or-nr|] where (or-nr) / |or-nr| is the unit length camera ray
 
-            # Given the unit vector z on the z-axis
-            # (ir-nr) ⋅ z = - (nr-oi) ⋅ z
-            # ⇒ |ir-nr| = - [(nr-oi) ⋅ z] / [(ir-nr) / |ir-nr| ⋅ z] where (ir-nr) / |ir-nr| is the unit length camera ray
+                # Given the unit vector z on the z-axis
+                # (ir-nr) ⋅ z = - (nr-oi) ⋅ z
+                # ⇒ |ir-nr| = - [(nr-oi) ⋅ z] / [(ir-nr) / |ir-nr| ⋅ z] where (ir-nr) / |ir-nr| is the unit length camera ray
 
-            triangulated_points = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
-            triangulated_points[:, valid_mask] = np.array(pcd.points).T
-            triangulated_normals = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
-            triangulated_normals[:, valid_mask] = np.array(pcd.normals).T
-            camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
-            normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
-            camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
-            camera_ray_to_image_plane = camera_rays * -triangulated_normals[2, :] / camera_rays[2, :]
+                triangulated_points = stitched_triangulated_points[:, :3].T
+                camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
 
-            object_to_image_ratio = (np.linalg.norm(triangulated_normals + camera_ray_to_object_plane, axis=0)
-                                     / np.clip(np.linalg.norm(triangulated_normals + camera_ray_to_image_plane, axis=0), 1e-8, np.inf))
-            perspective_distortion = 1 - np.min(np.stack([object_to_image_ratio,
-                                                          np.clip(1 / object_to_image_ratio, 1e-8, np.inf)]), axis=0)
+                normal_ray_alignment = np.sum(camera_rays * stitched_triangulated_normals, axis=0)
 
-            triangulated_normal_weights = 0.5 * (1 - scipy.special.erf((perspective_distortion - 0.6) / 0.1))
-            triangulated_normal_weights[normal_ray_alignment >= 0] = 0
+                camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
+                camera_ray_to_image_plane = camera_rays * -stitched_triangulated_normals[2, :] / camera_rays[2, :]
 
-            cross_warp_triangulated_points = {}
+                object_to_image_ratio = (np.linalg.norm(stitched_triangulated_normals + camera_ray_to_object_plane, axis=0)
+                                         / np.clip(np.linalg.norm(stitched_triangulated_normals + camera_ray_to_image_plane, axis=0), 1e-8, np.inf))
+                perspective_distortion = 1 - np.min(np.stack([object_to_image_ratio,
+                                                              np.clip(1 / object_to_image_ratio, 1e-8, np.inf)]), axis=0)
 
-            for cross_frame_idx in range(current_frame_idx):
-                print('cross_frame_idx', cross_frame_idx)
+                triangulated_normal_weights = 0.5 * (1 - scipy.special.erf((perspective_distortion - 0.6) / 0.1))
+                triangulated_normal_weights[normal_ray_alignment >= 0] = 0
 
+                return (current_camera_extrinsic, current_triangulated_idxs, current_triangulated_idxs_to_image_idxs,
+                        triangulated_normal_weights)
+
+            def calc_common_view_frustum(current_frame_idx, cross_frame_idx):
                 #cross_motion_blur = np.max([key_frame_motion_blurs[idx] for idx in [cross_frame_idx, current_frame_idx]])
 
                 cross_camera_extrinsic = key_frame_camera_extrinsics[cross_frame_idx]
@@ -1346,8 +1341,7 @@ if __name__ == '__main__':
                 cross_image_geometry = shapely.MultiPoint(uvs.T).convex_hull
                 projected_cone_coverage = cross_image_geometry.intersection(projected_points_geometry).area / cross_image_geometry.area
                 if projected_cone_coverage < 0.5:
-                    print('projected_cone_coverage', projected_cone_coverage)
-                    continue
+                    return ('projected_cone_coverage', projected_cone_coverage),
 
                 """
                 @param cameraMatrix1 First camera intrinsic matrix.
@@ -1476,12 +1470,10 @@ if __name__ == '__main__':
                     if np.all(rect_proximity >= 1.0):
                         break
                 else:
-                    print('img_size_trim', img_size_trim)
-                    continue
+                    return ('img_size_trim', img_size_trim),
 
                 if overtrimmed_common_view_frustum:
-                    print('overtrimmed_common_view_frustum, img_size_trim', overtrimmed_common_view_frustum, img_size_trim)
-                    continue
+                    return ('overtrimmed_common_view_frustum, img_size_trim', overtrimmed_common_view_frustum, img_size_trim),
 
                 # common_view_frustum_xyzs are the vertices of the convex hull which can
                 # be used to calculate the extremities of the geometry.
@@ -1509,8 +1501,7 @@ if __name__ == '__main__':
                 common_view_frustum_weighted_inlier_ratio = (np.sum(common_view_frustum_sample_points_weights[common_view_frustum_inlier_mask])
                                                              / np.sum(common_view_frustum_sample_points_weights))
                 if common_view_frustum_weighted_inlier_ratio < 0.2:
-                    print('common_view_frustum_weighted_inlier_ratio', common_view_frustum_weighted_inlier_ratio)
-                    continue
+                    return ('common_view_frustum_weighted_inlier_ratio', common_view_frustum_weighted_inlier_ratio),
 
                 common_view_frustum_sample_points1 = R1 @ common_view_frustum_sample_points
                 common_view_frustum_sample_points2 = R2 @ (R @ common_view_frustum_sample_points + t)
@@ -1568,8 +1559,7 @@ if __name__ == '__main__':
 
                 """
                 if img_size_trim > max(img.shape[:2]) / 4 or rect_proximity < 1.0 or disparity_spread < 16 * disparity_map_zoom or disparity_spread > 384 * disparity_map_zoom:
-                    print('img_size_trim, rect_proximity, disparity_spread', img_size_trim, rect_proximity, disparity_spread)
-                    continue
+                    return ('img_size_trim, rect_proximity, disparity_spread', img_size_trim, rect_proximity, disparity_spread),
                 """
 
                 # Noting that positive disparity is in the negative x-axis direction relative to the reference (left) image,
@@ -1578,16 +1568,62 @@ if __name__ == '__main__':
                 #    to: x - disparity_lower
                 # Skip disparity computation if the search range falls entirely outside the right image for over half of the left image pixels.
                 if 0.5 * newImageSize[0] - disparity_upper > newImageSize[0] or 0.5 * newImageSize[0] - disparity_lower < 0:
-                    print('disparity_lower, disparity_upper', disparity_lower, disparity_upper)
-                    continue
+                    return ('disparity_lower, disparity_upper', disparity_lower, disparity_upper),
                 # Skip disparity computation if the search range exceeds the width of the image.
                 # There is potentially much more occlusion, dissimilar lighting between the images,
                 # and a smaller resulting area of useful disparity.
                 # For a baseline b = 3mm, fx * disparity_map_zoom = 360 * 0.25 = 90, and a depth z range of [5mm, 30mm],
                 # the disparty b * fx * disparity_map_zoom / z range is [3 * 90 / 30, 3 * 90 / 5] = [9, 54]
                 if disparity_spread > newImageSize[0]:
-                    print('disparity_spread', disparity_spread)
+                    return ('disparity_spread', disparity_spread),
+
+                return (None,
+                        cross_camera_extrinsic, ref_img, ref_gray, ref_img_mask, cross_image_points, cross_triangulated_idxs_to_image_idxs,
+                        cross_unmatched_triangulated_idxs, cross_triangulated_image_points, cross_unmatched_triangulated_image_points,
+                        current_triangulated_image_points,
+                        R1, R2, P1, P2, img_size_trim, rect_proximity,
+                        common_view_frustum_sample_points,
+                        common_view_frustum_sample_points_weights,
+                        common_view_frustum_inlier_mask,
+                        disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread)
+
+
+            # Cross stitching / loop closure between each previous frame with the current frame.
+            # Retrace triangulated points that previously moved out of view and lost sequential optical flow tracking,
+            # but have re-entered the current view.
+            # These are the set of unmatched points between each previous cross frame and the current frame.
+            # For each previous cross frame:
+            #  - Calculate and apply the stereo camera rectification transforms corresponding to the camera extrinsic transform
+            #    and compute the disparity map between the rectified images.
+            #  - Derive the cross flow from the disparity map and apply it to map the current frame image onto the cross frame image space.
+            #  - Compute the residual optical flow between the mapped current frame image and the cross frame image and apply the
+            #    residual optical flow vectors to update the location of the cross mapped triangulated point projections.
+            # For each triangulated point, cluster the collection of unmatched cross flow mapped coordinates across all the cross frames.
+            # Stitch the triangulated point if the modal cluster has a small enough variance and its centroid is close enough
+            # to the projected location of the triangulated point in the current frame.
+
+            (current_camera_extrinsic,
+             current_triangulated_idxs, current_triangulated_idxs_to_image_idxs,
+             triangulated_normal_weights) = bundle_adjustment()
+
+            cross_warp_triangulated_points = {}
+
+            for cross_frame_idx in range(current_frame_idx):
+                print('cross_frame_idx', cross_frame_idx)
+
+                results = calc_common_view_frustum(current_frame_idx, cross_frame_idx)
+                limitation = results[0]
+                if limitation is not None:
+                    print(*limitation)
                     continue
+                (cross_camera_extrinsic, ref_img, ref_gray, ref_img_mask, cross_image_points, cross_triangulated_idxs_to_image_idxs,
+                 cross_unmatched_triangulated_idxs, cross_triangulated_image_points, cross_unmatched_triangulated_image_points,
+                 current_triangulated_image_points,
+                 R1, R2, P1, P2, img_size_trim, rect_proximity,
+                 common_view_frustum_sample_points,
+                 common_view_frustum_sample_points_weights,
+                 common_view_frustum_inlier_mask,
+                 disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = results[1:]
 
 
                 # TODO: Weighting and error threshold dependent on depth?
@@ -1691,6 +1727,7 @@ if __name__ == '__main__':
                                          cross_projected_predicted_points.T.reshape(imageSize_ext[::-1] + (2,)).astype(np.float32), None, cv2.INTER_LINEAR,
                                          borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
 
+                # gray_warp_map[reference cross frame coordinates] -> current frame coordinates mapped by the fitted linear model
                 gray_warp_map = current_projected_predicted_points.T.reshape(imageSize_ext[::-1] + (2,)).astype(np.float32)
                 gray_warp = cv2.remap(gray,
                                       gray_warp_map, None, cv2.INTER_LINEAR,
@@ -1988,6 +2025,8 @@ if __name__ == '__main__':
                     ecc_uvs = ecc_uvs[:2, :] / ecc_uvs[2, :]
                     ecc_uv_grid = ecc_uvs.reshape(uv_grid.shape).astype(np.float32)
 
+                    # cross_flow_map[reference cross frame coordinates] -> reference cross frame coordinates of
+                    #                                                      warped current frame mapped by the ECC transform
                     cross_flow_map = np.transpose(ecc_uv_grid, axes=(1, 2, 0))
 
                     border_value = 127
@@ -2044,12 +2083,15 @@ if __name__ == '__main__':
 
                 xs, ys = inlier_uv[:, xys_mask]
 
+                # interpolate from reference cross frame coordinates to
+                # reference cross frame coordinates of warped current frame mapped by the ECC transform
                 interp = scipy.interpolate.RegularGridInterpolator((np.arange(cross_flow_map.shape[0]), np.arange(cross_flow_map.shape[1])),
                                                                    cross_flow_map[:, :, 0] + cross_flow_map[:, :, 1] * 1j,
                                                                    method='linear', bounds_error=False, fill_value=np.nan)
                 cross_flow_map_interp = interp((ys, xs)).astype(np.complex64)
                 cross_flow_map_xys = np.vstack([cross_flow_map_interp.real, cross_flow_map_interp.imag]).T
 
+                # interpolate from cross frame coordinates to current frame reference coordinates mapped by the fitted linear model
                 interp = scipy.interpolate.RegularGridInterpolator((np.arange(gray_warp_map.shape[0]), np.arange(gray_warp_map.shape[1])),
                                                                    gray_warp_map[:, :, 0] + gray_warp_map[:, :, 1] * 1j,
                                                                    method='linear', bounds_error=False, fill_value=np.nan)
@@ -2288,16 +2330,22 @@ if __name__ == '__main__':
                     stash_fig_page()
 
 
-            inv_camera_extrinsic = np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx])
+            # Augment the loss function with projection errors in the current frame of reference
+            # for unmatched triangulated points mapped by the estimated ECC warp transforms between each
+            # cross frame and the current frame
+
+            image_point_weights = key_frame_image_point_weights[current_frame_idx]
+            camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
+
+            inv_camera_extrinsic = np.linalg.inv(camera_extrinsic)
             R = inv_camera_extrinsic[:3, :3]
             t = inv_camera_extrinsic[:3, 3:]
-            model_triangulated_points = R @ stitched_triangulated_points[:, :3].T + t
+            model_triangulated_points_numpy = R @ stitched_triangulated_points[:, :3].T + t
+            model_triangulated_normals_numpy = R @ stitched_triangulated_normals
 
             warp_image_points = []
             warp_image_points_weights = []
             for cross_frame_idx in range(current_frame_idx):
-
-                image_point_weights = key_frame_image_point_weights[current_frame_idx]
 
                 image_points = np.full((2, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
                 image_points_weights = np.zeros((6, stitched_triangulated_points.shape[0]))
@@ -2323,8 +2371,8 @@ if __name__ == '__main__':
                                              eig_vecs.imag, -eig_vecs.real])
                     image_points_weights[:, triangulated_point_idxs] = eig_weights
 
-                    triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
-                    triangulated_normals = camera_extrinsic[:3, :3] @ stitched_triangulated_normals[:, triangulated_point_idxs]
+                    triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points_numpy[:, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
+                    triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals_numpy[:, triangulated_point_idxs]
                     camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
 
                     normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
@@ -2346,19 +2394,10 @@ if __name__ == '__main__':
             warp_image_points = np.array(warp_image_points)
             warp_image_points_weights = np.array(warp_image_points_weights)
 
-            model_triangulated_points = torch.tensor(model_triangulated_points[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
+            model_triangulated_points = torch.tensor(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
             warp_image_points = torch.tensor(warp_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
             warp_image_points[~torch.isfinite(warp_image_points)] = 0
             warp_image_points_weights = torch.tensor(warp_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
-
-            def calc_projected_image_points():
-                model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs)
-                object_points = model_Rs @ model_triangulated_points + model_tvecs
-
-                xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
-                yd = object_points[:, 1:2, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
-
-                return torch.cat([xd, yd], dim=1) * camera_fxy + camera_cxy
 
             def loss_fn(temperature):
                 bundle_projected_points = calc_projected_image_points()
@@ -2391,538 +2430,29 @@ if __name__ == '__main__':
                 return (torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
                         + torch.sum(warp_projection_err_losses * warp_image_points_weights[:, :2, :]))
 
-            lr = 0.005
-            num_steps = 3000
-            convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-            optimiser = torch.optim.Adam([model_rvecs, model_tvecs, model_triangulated_points], lr=lr)
-            lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
-                                       * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
-            losses = []
-            for optim_step in range(num_steps):
-                optimiser.zero_grad()
-                temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-                loss = loss_fn(temperature)
-                loss.backward()
-                optimiser.step()
-                scheduler.step()
-                losses.append(loss.numpy(force=True))
-                loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
-                if optim_step % 100 == 0:
-                    print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
-                          'learning rate', np.round(scheduler.get_last_lr()[0], 6), 'temperature', np.round(temperature, 3))
-                if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['rtol'] * losses[-1]:
-                    break
 
-            print('len(losses)', len(losses))
-            print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
-            print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
-
-            del key_frame_camera_extrinsics[:]
-            for rvec, tvec in zip(model_rvecs.numpy(force=True), model_tvecs.numpy(force=True)):
-                R, jacobian = cv2.Rodrigues(rvec)
-                t = tvec
-                key_frame_camera_extrinsics.append(np.block([[R, t], [0, 0, 0, 1]]))
-
-            camera_transform = key_frame_camera_extrinsics[current_frame_idx] @ np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx - 1])
-            R = camera_transform[:3, :3]
-            t = camera_transform[:3, 3:]
-            optim_transform_delta_vec = (R @ transform_delta_ref_vec + t - transform_delta_ref_vec).flatten()
-            print('optimised transform delta vec', np.round(optim_transform_delta_vec, 3))
-            torch.set_default_device(torch.device('cpu'))
-            for idx in range(2):
-                print(f'gmm[{idx}] log_prob(optim_transform_delta_vec)', np.round(gmm_distributions[idx].log_probability(optim_transform_delta_vec[None, :]).numpy(), 3))
-            torch.set_default_device(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-
-            # TODO: calculate and record epipolar inliers as a measure of traction / slip
-
-            if False:
-                current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
-                R = current_camera_extrinsic[:3, :3]
-                t = current_camera_extrinsic[:3, 3:]
-                stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points.numpy(force=True) + t).T
-            else:
-                first_camera_extrinsic = key_frame_camera_extrinsics[0]
-                R = first_camera_extrinsic[:3, :3]
-                t = first_camera_extrinsic[:3, 3:]
-                model_triangulated_points = R @ model_triangulated_points.numpy(force=True) + t
-
-                key_frame_camera_extrinsics[:] = [camera_extrinsic @ np.linalg.inv(first_camera_extrinsic)
-                                                  for camera_extrinsic in key_frame_camera_extrinsics]
-
-                scaling_factors = []
-                for image_points_weights_magn, camera_extrinsic in zip(torch.norm(bundle_image_points_weights[:, :2, :], dim=1).numpy(force=True),
-                                                                       key_frame_camera_extrinsics):
-                    triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:, image_points_weights_magn >= 1e-2] + camera_extrinsic[:3, 3:]
-
-                    # Estimate the scaling factor from the depth distribution of the triangulated points
-                    # assuming the camera is positioned at a distance of ~8mm from the target
-                    c = np.percentile(triangulated_points[2, :], 25) / 8.0
-                    scaling_factors.append(c)
-                c = np.median(scaling_factors)
-
-                print('scaling factor', c, np.round(scaling_factors, 2))
-                model_triangulated_points /= c
-                key_frame_camera_extrinsics[:] = [np.block([[camera_extrinsic[:3, :3], camera_extrinsic[:3, 3:] / c], [0, 0, 0, 1]])
-                                                  for camera_extrinsic in key_frame_camera_extrinsics]
-
-                current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
-                R = current_camera_extrinsic[:3, :3]
-                t = current_camera_extrinsic[:3, 3:]
-                stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points + t).T
-
-
-            # Cross stitching / loop closure between each previous frame with the current frame.
-            # Retrace triangulated points that previously moved out of view and lost sequential optical flow tracking,
-            # but have re-entered the current view.
-            # These are the set of unmatched points between each previous cross frame and the current frame.
-            # For each previous cross frame:
-            #  - Calculate and apply the stereo camera rectification transforms corresponding to the camera extrinsic transform
-            #    and compute the disparity map between the rectified images.
-            #  - Derive the cross flow from the disparity map and apply it to map the current frame image onto the cross frame image space.
-            #  - Compute the residual optical flow between the mapped current frame image and the cross frame image and apply the
-            #    residual optical flow vectors to update the location of the cross mapped triangulated point projections.
-            # For each triangulated point, cluster the collection of unmatched cross flow mapped coordinates across all the cross frames.
-            # Stitch the triangulated point if the modal cluster has a small enough variance and its centroid is close enough
-            # to the projected location of the triangulated point in the current frame.
-
-            current_triangulated_image_idxs = np.where(current_image_to_triangulated_point_idxs >= 0)[0]
-            current_triangulated_idxs = current_image_to_triangulated_point_idxs[current_triangulated_image_idxs]
-            current_triangulated_idxs_to_image_idxs = dict(zip(current_triangulated_idxs, current_triangulated_image_idxs))
-
-            valid_mask = np.all(np.isfinite(stitched_triangulated_points[:, :3]), axis=1)
-            pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(stitched_triangulated_points[valid_mask, :3]))
-            pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=64))
-            #pcd.orient_normals_to_align_with_direction(orientation_reference=np.array([0, 0, -1]))
-            # https://github.com/isl-org/Open3D/blob/v0.18.0/cpp/open3d/geometry/PointCloud.h
-            # Function to consistently orient estimated normals based on consistent tangent planes as described in Hoppe et al.,
-            # "Surface Reconstruction from Unorganized Points", 1992.
-            # Further details on parameters are described in Piazza, Valentini, Varetti, "Mesh Reconstruction from Point Cloud", 2023.
-            #  - k: k nearest neighbour for graph reconstruction for normal propagation.
-            #  - lambda: penalty constant on the distance of a point from the tangent plane
-            #  - cos_alpha_tol: threshold that defines the amplitude of the cone spanned by the reference normal
-            # pcd.orient_normals_consistent_tangent_plane tends to invert normals for points not fully aligned with the primary surface
-            #pcd.orient_normals_consistent_tangent_plane(**{'k': 30, 'lambda': 0.0, 'cos_alpha_tol': 1.0})
-            #if np.mean(np.array(pcd.normals)[:, 2]) > 0:
-            #    pcd.normals = o3d.utility.Vector3dVector(-np.array(pcd.normals))
-            pcd.transform(np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx]))
-            pcd_points = np.array(pcd.points).T
-            pcd_normals = np.array(pcd.normals).T
-            normal_ray_alignment = np.zeros((np.sum(valid_mask),), dtype=np.float32)
-            for image_to_triangulated_point_idxs, camera_extrinsic in zip(key_frame_image_triangulated_point_idxs + [current_image_to_triangulated_point_idxs],
-                                                                          key_frame_camera_extrinsics):
-                triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
-                triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
-                image_points_weights = np.zeros((stitched_triangulated_points.shape[0],), dtype=np.float32)
-                image_points_weights[triangulated_point_idxs] = 1
-
-                R = camera_extrinsic[:3, :3]
-                t = camera_extrinsic[:3, 3:]
-                object_points = R @ pcd_points + t
-                object_normals = R @ pcd_normals
-
-                object_point_ray = object_points / np.clip(np.linalg.norm(object_points, axis=0), 1e-6, np.inf)
-                normal_ray_alignment += np.sum(object_point_ray * object_normals, axis=0) * image_points_weights[valid_mask]
-            pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
-            pcd.transform(key_frame_camera_extrinsics[current_frame_idx])
-            assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
-
-            #     z               object-plane
-            #     z             or
-            #     z           o  r
-            #     z         o   r
-            #     z       o     ray-from_camera
-            #     z     o      r
-            #     z   o        r
-            #     z o         r
-            # iiiioiiiiiiiiiiiriiiimage-plane
-            #   o z  n       r
-            # o   z     n    r
-            #     z        nr
-            #     z         r n
-            #     z        r     normal-from-object-plane
-
-            # The image plane, object plane, object plane normal and z-axis are coincident at oi = on = oz
-            # object-plane section or-oi is projected onto image-plane section ir-oi
-            # Perspective distortion is based on object_to_image_ratio = |or-oi| / |ir-oi|
-            # camera_rays = (or-nr) / |or-nr| = (ir-nr) / |ir-nr|
-            # camera_ray_to_object_plane = or-nr
-            # camera_ray_to_image_plane = ir-nr
-
-            # |nr-oi| = 1
-            # ⇒ (nr-oi) ⋅ (or-nr) = -1
-            # ⇒ |or-nr| = -1 / [(nr-oi) ⋅ (or-nr) / |or-nr|] where (or-nr) / |or-nr| is the unit length camera ray
-
-            # Given the unit vector z on the z-axis
-            # (ir-nr) ⋅ z = - (nr-oi) ⋅ z
-            # ⇒ |ir-nr| = - [(nr-oi) ⋅ z] / [(ir-nr) / |ir-nr| ⋅ z] where (ir-nr) / |ir-nr| is the unit length camera ray
-
-            triangulated_points = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
-            triangulated_points[:, valid_mask] = np.array(pcd.points).T
-            triangulated_normals = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
-            triangulated_normals[:, valid_mask] = np.array(pcd.normals).T
-            camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
-            normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
-            camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
-            camera_ray_to_image_plane = camera_rays * -triangulated_normals[2, :] / camera_rays[2, :]
-
-            object_to_image_ratio = (np.linalg.norm(triangulated_normals + camera_ray_to_object_plane, axis=0)
-                                     / np.clip(np.linalg.norm(triangulated_normals + camera_ray_to_image_plane, axis=0), 1e-8, np.inf))
-            perspective_distortion = 1 - np.min(np.stack([object_to_image_ratio,
-                                                          np.clip(1 / object_to_image_ratio, 1e-8, np.inf)]), axis=0)
-
-            triangulated_normal_weights = 0.5 * (1 - scipy.special.erf((perspective_distortion - 0.6) / 0.1))
-            triangulated_normal_weights[normal_ray_alignment >= 0] = 0
+            (current_camera_extrinsic,
+             current_triangulated_idxs, current_triangulated_idxs_to_image_idxs,
+             triangulated_normal_weights) = bundle_adjustment()
 
             retrace_triangulated_candidates = collections.defaultdict(dict)
 
             for cross_frame_idx in range(current_frame_idx):
                 print('cross_frame_idx', cross_frame_idx)
 
-                #cross_motion_blur = np.max([key_frame_motion_blurs[idx] for idx in [cross_frame_idx, current_frame_idx]])
-
-                cross_camera_extrinsic = key_frame_camera_extrinsics[cross_frame_idx]
-
-                ref_img, ref_gray = key_frame_images[cross_frame_idx]
-                #img, gray = key_frame_images[current_frame_idx]
-
-                ref_img_mask = key_frame_masks[cross_frame_idx]
-
-                # Extract the indices of the common set of triangulated points between the cross and current frames
-                xsc, ysc = key_frame_image_sample_points[cross_frame_idx]
-                cross_image_points = np.vstack([xsc, ysc])
-                cross_image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[cross_frame_idx]
-                cross_triangulated_image_idxs = np.where(cross_image_to_triangulated_point_idxs >= 0)[0]
-                cross_triangulated_idxs = cross_image_to_triangulated_point_idxs[cross_triangulated_image_idxs]
-                valid_mask = np.all(np.isfinite(stitched_triangulated_points[cross_triangulated_idxs, :3]), axis=1)
-                cross_triangulated_image_idxs = cross_triangulated_image_idxs[valid_mask]
-                cross_triangulated_idxs = cross_triangulated_idxs[valid_mask]
-                cross_triangulated_idxs_to_image_idxs = dict(zip(cross_triangulated_idxs, cross_triangulated_image_idxs))
-
-                common_triangulated_idxs = np.array(list(set(list(cross_triangulated_idxs)) & set(list(current_triangulated_idxs))), dtype=int)
-                cross_unmatched_triangulated_idxs = np.array(list(set(list(cross_triangulated_idxs)) - set(list(current_triangulated_idxs))), dtype=int)
-                print('len(common_triangulated_idxs)', len(common_triangulated_idxs))
-                print('len(cross_unmatched_triangulated_idxs)', len(cross_unmatched_triangulated_idxs))
-
-                cross_triangulated_image_idxs = list(map(cross_triangulated_idxs_to_image_idxs.get, common_triangulated_idxs))
-                cross_triangulated_image_points = cross_image_points[:, cross_triangulated_image_idxs].T
-                current_triangulated_image_idxs = list(map(current_triangulated_idxs_to_image_idxs.get, common_triangulated_idxs))
-                current_triangulated_image_points = np.vstack([xsn, ysn])[:, current_triangulated_image_idxs].T
-                cross_unmatched_triangulated_image_idxs = list(map(cross_triangulated_idxs_to_image_idxs.get, cross_unmatched_triangulated_idxs))
-                cross_unmatched_triangulated_image_points = cross_image_points[:, cross_unmatched_triangulated_image_idxs].T
-
-                inv_current_camera_extrinsic = np.linalg.inv(current_camera_extrinsic)
-                cross_triangulated_points = (inv_current_camera_extrinsic[:3, :3] @ stitched_triangulated_points[common_triangulated_idxs, :3].T
-                                             + inv_current_camera_extrinsic[:3, 3:]).T
-                cross_triangulated_rgb = stitched_triangulated_points[common_triangulated_idxs, 3:]
-
-                cross_object_points = cross_camera_extrinsic @ np.vstack([cross_triangulated_points.T, np.ones((cross_triangulated_points.shape[0],))])
-                cross_projected_points = camera_matrix @ cross_object_points[:3, :]
-                cross_projected_points = cross_projected_points[:2, :] / cross_projected_points[2, :]
-
-                current_object_points = current_camera_extrinsic @ np.vstack([cross_triangulated_points.T, np.ones((cross_triangulated_points.shape[0],))])
-                current_projected_points = camera_matrix @ current_object_points[:3, :]
-                current_projected_points = current_projected_points[:2, :] / current_projected_points[2, :]
-
-                #threshold = min(0.5 * (1 + cross_motion_blur), 2.0)
-                threshold = 6.0
-                cross_triangulated_inlier_idxs = np.where(np.linalg.norm(current_triangulated_image_points - current_projected_points.T, axis=1) < threshold)[0]
-                print('num cross triangulated point inliers', len(cross_triangulated_inlier_idxs))
-
-                # TODO: Resolve the different causes of low disparity confidence, in particular the case where
-                #       there is only partial visibility of the object as opposed to erroneous camera extrinsic estimates.
-                #       Investigate whether the triangulated points can be used to resolve this.
-
-                if exec_mode == 'debug_key_frame' and current_frame_idx == debug_key_frame_idx:
-                    plt.figure('Cross projected triangulated points', figsize=(16, 10))
-                    setup_new_fig_page()
-                    plt.suptitle(f'cross, current frame idxs: {cross_frame_idx}, {current_frame_idx}')
-                    ax = plt.subplot(2, 3, 1)
-                    plt.imshow(np.require(ref_img, dtype=np.uint8))
-                    ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-                    plt.imshow(np.require(img, dtype=np.uint8))
-                    ax3 = plt.subplot(2, 3, 3, projection='3d')
-                    ax3.scatter(*cross_triangulated_points.T, s=2, c=cross_triangulated_rgb/255)
-                    ax3.set_xlim((-20, 20))
-                    ax3.set_ylim((-20, 20))
-                    ax3.set_zlim((0, 40))
-                    ax3.set_aspect('equal', adjustable='datalim')
-                    ax3.set_xlabel('X')
-                    ax3.set_ylabel('Y')
-                    ax3.set_zlabel('Z')
-                    ax3.view_init(elev=-135, azim=-90, roll=0)
-                    ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-                    plt.scatter(*cross_triangulated_image_points.T, s=2, c='b', marker='o')
-                    plt.scatter(*cross_projected_points, s=2, c='y', marker='o')
-                    ax.set_aspect('equal')
-                    ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-                    plt.scatter(*current_triangulated_image_points.T, s=2, c='b', marker='o')
-                    plt.scatter(*current_projected_points, s=2, c='y', marker='o')
-                    ax.set_aspect('equal')
-                    plt.tight_layout()
-                    stash_fig_page()
-
-
-                camera_transform = current_camera_extrinsic @ np.linalg.inv(cross_camera_extrinsic)
-                R = camera_transform[:3, :3]
-                t = camera_transform[:3, 3:]
-
-                # Project the current frame's camera view cone onto the cross frame's camera image and calculate
-                # the intersection as a measure of the disparity that can potentially be derived
-                uvs = np.array([[0, 0], [img.shape[1] - 1, 0], [img.shape[1] - 1, img.shape[0] - 1], [0, img.shape[0] - 1]]).T
-                uvcs = uvs - camera_matrix[:2, 2:]
-                xys = np.linalg.inv(camera_matrix[:2, :2]) @ uvcs
-                xyzs = np.vstack([xys, np.ones(xys.shape[1],)])
-                xyzs = np.hstack([xyzs * 5, xyzs * 30])
-                xyzs = R.T @ xyzs - R.T @ t
-                projected_points = camera_matrix @ xyzs
-                projected_points = projected_points[:2, :] / projected_points[2, :]
-                projected_points_geometry = shapely.MultiPoint(projected_points.T).convex_hull
-                cross_image_geometry = shapely.MultiPoint(uvs.T).convex_hull
-                projected_cone_coverage = cross_image_geometry.intersection(projected_points_geometry).area / cross_image_geometry.area
-                if projected_cone_coverage < 0.5:
-                    print('projected_cone_coverage', projected_cone_coverage)
+                results = calc_common_view_frustum(current_frame_idx, cross_frame_idx)
+                limitation = results[0]
+                if limitation is not None:
+                    print(*limitation)
                     continue
-
-                """
-                @param cameraMatrix1 First camera intrinsic matrix.
-                @param distCoeffs1 First camera distortion parameters.
-                @param cameraMatrix2 Second camera intrinsic matrix.
-                @param distCoeffs2 Second camera distortion parameters.
-                @param imageSize Size of the image used for stereo calibration.
-                @param R Rotation matrix from the coordinate system of the first camera to the second camera,
-                        see @ref stereoCalibrate.
-                @param T Translation vector from the coordinate system of the first camera to the second camera,
-                        see @ref stereoCalibrate.
-                @param R1 Output 3x3 rectification transform (rotation matrix) for the first camera. This matrix
-                        brings points given in the unrectified first camera's coordinate system to points in the rectified
-                        first camera's coordinate system. In more technical terms, it performs a change of basis from the
-                        unrectified first camera's coordinate system to the rectified first camera's coordinate system.
-                @param R2 Output 3x3 rectification transform (rotation matrix) for the second camera. This matrix
-                        brings points given in the unrectified second camera's coordinate system to points in the rectified
-                        second camera's coordinate system. In more technical terms, it performs a change of basis from the
-                        unrectified second camera's coordinate system to the rectified second camera's coordinate system.
-                @param P1 Output 3x4 projection matrix in the new (rectified) coordinate systems for the first
-                        camera, i.e. it projects points given in the rectified first camera coordinate system into the
-                        rectified first camera's image.
-                @param P2 Output 3x4 projection matrix in the new (rectified) coordinate systems for the second
-                        camera, i.e. it projects points given in the rectified first camera coordinate system into the
-                        rectified second camera's image.
-                @param Q Output \f$4 \times 4\f$ disparity-to-depth mapping matrix (see @ref reprojectImageTo3D).
-                @param flags Operation flags that may be zero or @ref CALIB_ZERO_DISPARITY . If the flag is set,
-                        the function makes the principal points of each camera have the same pixel coordinates in the
-                        rectified views. And if the flag is not set, the function may still shift the images in the
-                        horizontal or vertical direction (depending on the orientation of epipolar lines) to maximize the
-                        useful image area.
-                @param alpha Free scaling parameter. If it is -1 or absent, the function performs the default
-                        scaling. Otherwise, the parameter should be between 0 and 1. alpha=0 means that the rectified
-                        images are zoomed and shifted so that only valid pixels are visible (no black areas after
-                        rectification). alpha=1 means that the rectified image is decimated and shifted so that all the
-                        pixels from the original images from the cameras are retained in the rectified images (no source
-                        image pixels are lost). Any intermediate value yields an intermediate result between
-                        those two extreme cases.
-                @param newImageSize New image resolution after rectification. The same size should be passed to
-                        #initUndistortRectifyMap (see the stereo_calib.cpp sample in OpenCV samples directory). When (0,0)
-                        is passed (default), it is set to the original imageSize . Setting it to a larger value can help you
-                        preserve details in the original image, especially when there is a big radial distortion.
-                @param validPixROI1 Optional output rectangles inside the rectified images where all the pixels
-                        are valid. If alpha=0 , the ROIs cover the whole images. Otherwise, they are likely to be smaller
-                        (see the picture below).
-                @param validPixROI2 Optional output rectangles inside the rectified images where all the pixels
-                        are valid. If alpha=0 , the ROIs cover the whole images. Otherwise, they are likely to be smaller
-                        (see the picture below).
-                """
-
-                imageSize = img.shape[1::-1]
-                R1, R2, P1, P2, Q, validPixROI1, validPixROI2 = cv2.stereoRectify(camera_matrix, None,
-                                                                                  camera_matrix, None,
-                                                                                  imageSize,
-                                                                                  R.astype(float), t.astype(float),
-                                                                                  flags=cv2.CALIB_ZERO_DISPARITY,
-                                                                                  alpha=-1,
-                                                                                  newImageSize=imageSize)
-
-                assert np.allclose(P1[:, :3], P2[:, :3])
-                assert np.allclose(np.std(np.diag(P1[:2, :2])), 0)
-
-                # This camera has a wider angle of view than a normal camera, the object is closer, and the
-                # translation between the stereo viewpoints is relatively small, and can include an unconventionally
-                # significant Z component.
-                # So the P1 and P2 camera matrices returned by cv2.stereoRectify() can be unusable, irrespective of
-                # the value of alpha set as -1, 0 or 1.
-                #rect_map_prev, _ = cv2.initUndistortRectifyMap(camera_matrix, None, R1, P1[:3, :3], newImageSize, cv2.CV_32FC2)
-                #rect_map_next, _ = cv2.initUndistortRectifyMap(camera_matrix, None, R2, P2[:3, :3], newImageSize, cv2.CV_32FC2)
-
-                if P2[1, 3] != 0:
-                    # cv2.stereoRectify() return values are targeted for vertical stereo
-                    # (the epipolar lines in the rectified images are vertical and have the same x-coordinate).
-                    # Rotate the space in order to use horizontal stereo.
-                    Ry2x, jacobian = cv2.Rodrigues(np.array([0, 0, -np.pi / 2]))
-                    R1 = Ry2x @ R1
-                    R2 = Ry2x @ R2
-
-                # Project the visible volume in the Z range 5 to 30 in the previous and next cameras' frames of reference
-                # onto the rectified stereo cameras
-                for img_size_trim in range(0, max(img.shape[:2]) // 2, 5):
-                    uvs = np.array([[0, 0], [img.shape[1] - 1, 0], [img.shape[1] - 1, img.shape[0] - 1], [0, img.shape[0] - 1]]).T
-                    uvcs = uvs - camera_matrix[:2, 2:]
-                    uvcs_clip = (max(img.shape[:2]) - 1) / 2 - img_size_trim
-                    uvcs = np.clip(uvcs, -uvcs_clip, uvcs_clip)
-                    xys = np.linalg.inv(camera_matrix[:2, :2]) @ uvcs
-                    xyzs = np.vstack([xys, np.ones(xys.shape[1],)])
-                    # Replicate 4 corners at depths 5 and 30 respectively
-                    xyzs = np.hstack([xyzs * 5, xyzs * 30])
-                    view_frustum_mesh, _ = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(xyzs.T)).compute_convex_hull()
-                    view_frustum_vertices = np.array(view_frustum_mesh.vertices)
-                    view_frustum_triangles = np.array(view_frustum_mesh.triangles)
-                    slicing_mesh = o3d.geometry.TriangleMesh(view_frustum_mesh)
-                    slicing_mesh.transform(np.linalg.inv(camera_transform))
-                    slicing_mesh.compute_triangle_normals()
-                    overtrimmed_common_view_frustum = False
-                    for triangle, normal in zip(np.array(slicing_mesh.triangles), np.array(slicing_mesh.triangle_normals)):
-                        sliced_vertices, _, _ = trimesh.intersections.slice_faces_plane(vertices=view_frustum_vertices,
-                                                                                        faces=view_frustum_triangles,
-                                                                                        plane_normal=-normal,
-                                                                                        plane_origin=np.array(slicing_mesh.vertices)[triangle[0], :])
-                        if sliced_vertices.shape[0] < 4:
-                            overtrimmed_common_view_frustum = True
-                            break
-                        sliced_vertices_pcd = trimesh.PointCloud(vertices=sliced_vertices)
-                        sliced_vertices_pcd.merge_vertices()
-                        if sliced_vertices_pcd.vertices.shape[0] < 4:
-                            overtrimmed_common_view_frustum = True
-                            break
-                        sliced_mesh = sliced_vertices_pcd.convex_hull
-                        if sliced_mesh.volume < 1000:
-                            overtrimmed_common_view_frustum = True
-                            break
-                        view_frustum_vertices = np.array(sliced_mesh.vertices)
-                        view_frustum_triangles = np.array(sliced_mesh.faces)
-
-                    if overtrimmed_common_view_frustum:
-                        break
-
-                    common_view_frustum_xyzs = view_frustum_vertices.T
-
-                    common_view_frustum_xyzs1 = R1 @ common_view_frustum_xyzs
-                    common_view_frustum_xyzs2 = R2 @ (R @ common_view_frustum_xyzs + t)
-
-                    rect_proximity = np.min(np.hstack([common_view_frustum_xyzs1[2, :], common_view_frustum_xyzs2[2, :]]))
-                    if np.all(rect_proximity >= 1.0):
-                        break
-                else:
-                    print('img_size_trim', img_size_trim)
-                    continue
-
-                if overtrimmed_common_view_frustum:
-                    print('overtrimmed_common_view_frustum, img_size_trim', overtrimmed_common_view_frustum, img_size_trim)
-                    continue
-
-                # common_view_frustum_xyzs are the vertices of the convex hull which can
-                # be used to calculate the extremities of the geometry.
-                # common_view_frustum_sample_points represents a distribution of points which can
-                # be used to calculate statistical properties of the geometry.
-                # Since the common view frustum is convex, it is much quicker to slice the point cloud
-                # than to use trimesh.Trimesh.contains().
-                hs, ws = np.round(np.array(img.shape[:2]) / 10).astype(int) + 1
-                uvs = np.vstack([uv.flatten() for uv in np.mgrid[0:img.shape[0]-1:hs*1j, 0:img.shape[1]-1:ws*1j][::-1]])
-                uvcs = uvs - camera_matrix[:2, 2:]
-                xys = np.linalg.inv(camera_matrix[:2, :2]) @ uvcs
-                xyzs = np.vstack([xys, np.ones(xys.shape[1],)])
-                common_view_frustum_sample_points = np.hstack([xyzs * z for z in 1 / np.linspace(1 / 29.999, 1 / 5.001, 129)])
-                common_view_frustum_sample_points_weights = np.power(common_view_frustum_sample_points[2, :], -1.25)
-
-                common_view_frustum_inlier_mask = np.full((common_view_frustum_sample_points.shape[1],), fill_value=True, dtype=bool)
-                slicing_mesh, _ = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(common_view_frustum_xyzs.T)).compute_convex_hull()
-                slicing_mesh.compute_triangle_normals()
-                for triangle, normal in zip(np.array(slicing_mesh.triangles), np.array(slicing_mesh.triangle_normals)):
-                    point_to_plane_distances = trimesh.points.point_plane_distance(common_view_frustum_sample_points.T,
-                                                                                   plane_normal=-normal,
-                                                                                   plane_origin=np.array(slicing_mesh.vertices)[triangle[0], :])
-                    common_view_frustum_inlier_mask &= point_to_plane_distances >= 0
-
-                common_view_frustum_weighted_inlier_ratio = (np.sum(common_view_frustum_sample_points_weights[common_view_frustum_inlier_mask])
-                                                             / np.sum(common_view_frustum_sample_points_weights))
-                if common_view_frustum_weighted_inlier_ratio < 0.2:
-                    print('common_view_frustum_weighted_inlier_ratio', common_view_frustum_weighted_inlier_ratio)
-                    continue
-
-                common_view_frustum_sample_points1 = R1 @ common_view_frustum_sample_points
-                common_view_frustum_sample_points2 = R2 @ (R @ common_view_frustum_sample_points + t)
-
-                disparity_map_zoom = 0.125
-                fxy = (disparity_map_zoom * np.diag(camera_matrix[:2, :2])
-                       * np.mean(np.hstack([common_view_frustum_sample_points1[2, :], common_view_frustum_sample_points2[2, :]]))
-                       / np.mean(common_view_frustum_sample_points[2, :]))
-
-                uvs1 = common_view_frustum_xyzs1[:2, :] / common_view_frustum_xyzs1[2, :] * fxy[:, None]
-                uvs2 = common_view_frustum_xyzs2[:2, :] / common_view_frustum_xyzs2[2, :] * fxy[:, None]
-
-                # Enclose both camera projections of the common view frustum in the vertical image axes
-                tb1 = (np.min(uvs1[1, :]), np.max(uvs1[1, :]))
-                tb2 = (np.min(uvs2[1, :]), np.max(uvs2[1, :]))
-
-                img_height = int(np.ceil(max(tb1[1], tb2[1]) - min(tb1[0], tb2[0])))
-                cy = 0.5 * (img_height - 1) - np.mean(tb2 + tb2)
-
-                # Enclose each camera projection of the common view frustum in each horizontal image axis
-                lr1 = (np.min(uvs1[0, :]), np.max(uvs1[0, :]))
-                lr2 = (np.min(uvs2[0, :]), np.max(uvs2[0, :]))
-
-                img_width = int(np.ceil(max(lr1[1] - lr1[0], lr2[1] - lr2[0])))
-                cx1 = 0.5 * (img_width - 1) - np.mean(lr1)
-                cx2 = 0.5 * (img_width - 1) - np.mean(lr2)
-
-                P1 = np.array([[fxy[0], 0, cx1], [0, fxy[1], cy], [0, 0, 1]])
-                P2 = np.array([[fxy[0], 0, cx2], [0, fxy[1], cy], [0, 0, 1]])
-
-                # Disparity is defined as left_x - right_x, i.e. in the negative direction of the x-axis relative to the reference image,
-                # perhaps following the concept that the camera on the "right" has an extrinsic negative horizontal translation.
-                uvs1 = common_view_frustum_sample_points1[:2, :] / common_view_frustum_sample_points1[2, :] * fxy[:, None]
-                uvs2 = common_view_frustum_sample_points2[:2, :] / common_view_frustum_sample_points2[2, :] * fxy[:, None]
-                dx12s = (uvs1[0, :] + cx1) - (uvs2[0, :] + cx2)
-
-                newImageSize = (img_width, img_height)
-
-                # Measure lower and upper percentiles and the spread of the disparity distribution
-                disparity_lower, disparity_upper = np.round(np.percentile(dx12s[common_view_frustum_inlier_mask], [10, 90])).astype(int)
-                disparity_spread = disparity_upper + 1 - disparity_lower
-
-                """
-                if exec_mode == 'debug_key_frame' and current_frame_idx == debug_key_frame_idx:
-                    plt.figure('dx12s', figsize=(16, 10))
-                    setup_new_fig_page()
-                    plt.suptitle(f'cross, current frame idxs: {cross_frame_idx}, {current_frame_idx}\ndisparity_spread {disparity_spread}')
-                    hist_bins = np.arange(np.floor(np.min(dx12s[common_view_frustum_inlier_mask])),
-                                          np.floor(np.max(dx12s[common_view_frustum_inlier_mask])) + 1)
-                    plt.hist(dx12s[common_view_frustum_inlier_mask], bins=hist_bins,
-                             weights=common_view_frustum_sample_points_weights[common_view_frustum_inlier_mask])
-                    plt.tight_layout()
-                    stash_fig_page()
-                """
-
-                """
-                if img_size_trim > max(img.shape[:2]) / 4 or rect_proximity < 1.0 or disparity_spread < 16 * disparity_map_zoom or disparity_spread > 384 * disparity_map_zoom:
-                    print('img_size_trim, rect_proximity, disparity_spread', img_size_trim, rect_proximity, disparity_spread)
-                    continue
-                """
-
-                # Noting that positive disparity is in the negative x-axis direction relative to the reference (left) image,
-                # for each left image pixel x location, the disparity search range within the right image extends:
-                #  from: x - disparity_upper
-                #    to: x - disparity_lower
-                # Skip disparity computation if the search range falls entirely outside the right image for over half of the left image pixels.
-                if 0.5 * newImageSize[0] - disparity_upper > newImageSize[0] or 0.5 * newImageSize[0] - disparity_lower < 0:
-                    print('disparity_lower, disparity_upper', disparity_lower, disparity_upper)
-                    continue
-                # Skip disparity computation if the search range exceeds the width of the image.
-                # There is potentially much more occlusion, dissimilar lighting between the images,
-                # and a smaller resulting area of useful disparity.
-                # For a baseline b = 3mm, fx * disparity_map_zoom = 360 * 0.25 = 90, and a depth z range of [5mm, 30mm],
-                # the disparty b * fx * disparity_map_zoom / z range is [3 * 90 / 30, 3 * 90 / 5] = [9, 54]
-                if disparity_spread > newImageSize[0]:
-                    print('disparity_spread', disparity_spread)
-                    continue
+                (cross_camera_extrinsic, ref_img, ref_gray, ref_img_mask, cross_image_points, cross_triangulated_idxs_to_image_idxs,
+                 cross_unmatched_triangulated_idxs, cross_triangulated_image_points, cross_unmatched_triangulated_image_points,
+                 current_triangulated_image_points,
+                 R1, R2, P1, P2, img_size_trim, rect_proximity,
+                 common_view_frustum_sample_points,
+                 common_view_frustum_sample_points_weights,
+                 common_view_frustum_inlier_mask,
+                 disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = results[1:]
 
                 # StereoSGBM requires num_disparities to be a multiple of 16.
                 if True:
@@ -4485,8 +4015,8 @@ if __name__ == '__main__':
         pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
         assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
 
-        stitched_triangulated_normals = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
-        stitched_triangulated_normals[:, valid_mask] = np.array(pcd.normals).T
+        model_triangulated_normals_numpy = np.full((3, stitched_triangulated_points.shape[0]), fill_value=np.nan, dtype=np.float32)
+        model_triangulated_normals_numpy[:, valid_mask] = np.array(pcd.normals).T
 
         vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
 
@@ -4531,7 +4061,7 @@ if __name__ == '__main__':
         model_rvecs = torch.tensor(np.array(rvecs), dtype=torch.float32, requires_grad=True)
         model_tvecs = torch.tensor(np.array(tvecs), dtype=torch.float32, requires_grad=True)
 
-        model_triangulated_points = stitched_triangulated_points[:, :3].T
+        model_triangulated_points_numpy = stitched_triangulated_points[:, :3].T
 
         triangulated_image_points = []
         triangulated_image_points_weights = []
@@ -4564,10 +4094,12 @@ if __name__ == '__main__':
                                      eig_vecs.imag, -eig_vecs.real])
             image_points_weights[:, triangulated_point_idxs] = eig_weights
 
-            triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
-            triangulated_normals = camera_extrinsic[:3, :3] @ stitched_triangulated_normals[:, triangulated_point_idxs]
+            triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points_numpy[:, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
+            triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals_numpy[:, triangulated_point_idxs]
             camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
+
             normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
+
             camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
             camera_ray_to_image_plane = camera_rays * -triangulated_normals[2, :] / camera_rays[2, :]
 
@@ -4592,14 +4124,14 @@ if __name__ == '__main__':
         assert np.all(triangulated_point_mapping_counts > 0)
         # Triangulated points are initialised with two mapped image points, but the second (or a later point) may
         # exit from view or be pruned if it is obscured. However the association with the initial image point is still retained.
-        assert np.all(np.all(~np.isfinite(model_triangulated_points), axis=0) == (triangulated_point_mapping_counts == 1))
-        assert np.all(np.all(np.isfinite(model_triangulated_points), axis=0) == (triangulated_point_mapping_counts >= 2))
+        assert np.all(np.all(~np.isfinite(model_triangulated_points_numpy), axis=0) == (triangulated_point_mapping_counts == 1))
+        assert np.all(np.all(np.isfinite(model_triangulated_points_numpy), axis=0) == (triangulated_point_mapping_counts >= 2))
         bundle_triangulated_point_idxs = np.where(triangulated_point_mapping_counts >= 2)[0]
 
         print('len(bundle_triangulated_point_idxs)', len(bundle_triangulated_point_idxs),
               'of len(triangulated_point_mapping_counts)', len(triangulated_point_mapping_counts))
 
-        model_triangulated_points = torch.tensor(model_triangulated_points[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
+        model_triangulated_points = torch.tensor(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
         bundle_image_points = torch.tensor(triangulated_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
         bundle_image_points[~torch.isfinite(bundle_image_points)] = 0
         bundle_image_points_weights = torch.tensor(triangulated_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
@@ -4610,7 +4142,8 @@ if __name__ == '__main__':
         gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
 
         def calc_projected_image_points_with_camera_model():
-            model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs)
+            # Select Rodrigues formula with fast=True
+            model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
             object_points = model_Rs @ model_triangulated_points + model_tvecs
 
             xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
