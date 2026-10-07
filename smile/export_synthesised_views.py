@@ -172,7 +172,7 @@ if __name__ == '__main__':
         with open(input_path, 'rb') as pickle_file:
             data = pickle.load(pickle_file)
             synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
-            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            synthetic_camera_intrinsic = data['synthetic_camera_intrinsic']
             filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
             vertices = data['vertices']
             triangles = data['triangles']
@@ -199,7 +199,7 @@ if __name__ == '__main__':
         grid_scale = 8
         hj, wj = h * grid_scale, w * grid_scale
 
-        camera_intrinsic_scaled = np.block([[camera_intrinsic_synthetic[:2, :2] * grid_scale, (camera_intrinsic_synthetic[:2, 2:] + 0.5) * grid_scale - 0.5], [0, 0, 1]])
+        camera_intrinsic_scaled = np.block([[synthetic_camera_intrinsic[:2, :2] * grid_scale, (synthetic_camera_intrinsic[:2, 2:] + 0.5) * grid_scale - 0.5], [0, 0, 1]])
 
         scene = o3d.t.geometry.RaycastingScene()
         scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(canvas_mesh))
@@ -259,7 +259,7 @@ if __name__ == '__main__':
         # of the synthetic image with no void pixels
         trimmed_canvas_mesh = (mapped_canvas_mesh + mapped_subdiv_canvas_mesh).merge_close_vertices(eps=1e-3)
 
-        projected_points = camera_intrinsic_synthetic @ np.array(trimmed_canvas_mesh.vertices).T
+        projected_points = synthetic_camera_intrinsic @ np.array(trimmed_canvas_mesh.vertices).T
         projected_points = projected_points[:2, :] / projected_points[2, :]
 
         material_image = np.array(filtered_up_model_synthetic_frame_img)
@@ -295,7 +295,7 @@ if __name__ == '__main__':
             import trimesh.viewer
 
             trimesh_camera = trimesh.scene.cameras.Camera(name='camera', resolution=material_image.shape[:2],
-                                                          focal=np.diag(camera_intrinsic_synthetic)[:2])
+                                                          focal=np.diag(synthetic_camera_intrinsic)[:2])
             trimesh_scene = trimesh.Scene(geometry=[tri_mesh],  camera=trimesh_camera)
 
             output_path = output_dirpath / (input_path.stem + '.trimesh.scene.html')
@@ -415,7 +415,7 @@ if __name__ == '__main__':
 
         visualise_geometries([trimmed_canvas_mesh],
                              material_image.shape[1::-1],
-                             camera_intrinsic_synthetic,
+                             synthetic_camera_intrinsic,
                              lookat=[0, 0, 8],
                              up=[0, -1, 0],
                              front=[0, 0, -8],
@@ -428,7 +428,7 @@ if __name__ == '__main__':
         with open(input_path, 'rb') as pickle_file:
             data = pickle.load(pickle_file)
             synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
-            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            synthetic_camera_intrinsic = data['synthetic_camera_intrinsic']
             filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
             vertices = data['vertices']
             triangles = data['triangles']
@@ -446,7 +446,7 @@ if __name__ == '__main__':
         valid_vertices = np.array(canvas_mesh.vertices)
         valid_vertex_normals = np.array(canvas_mesh.vertex_normals)
 
-        ref_projected_points = camera_intrinsic_synthetic @ (synthetic_camera_extrinsic[:3, :3] @ valid_vertices.T + synthetic_camera_extrinsic[:3, 3:])
+        ref_projected_points = synthetic_camera_intrinsic @ (synthetic_camera_extrinsic[:3, :3] @ valid_vertices.T + synthetic_camera_extrinsic[:3, 3:])
         ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
 
         for secondary_frame_idx in secondary_frame_idxs:
@@ -477,7 +477,7 @@ if __name__ == '__main__':
         with open(input_path, 'rb') as pickle_file:
             data = pickle.load(pickle_file)
             synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
-            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            synthetic_camera_intrinsic = data['synthetic_camera_intrinsic']
             filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
             vertices = data['vertices']
             triangles = data['triangles']
@@ -1235,7 +1235,7 @@ if __name__ == '__main__':
         with open(input_path, 'rb') as pickle_file:
             data = pickle.load(pickle_file)
             synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
-            camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+            synthetic_camera_intrinsic = data['synthetic_camera_intrinsic']
             filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
             vertices = data['vertices']
             triangles = data['triangles']

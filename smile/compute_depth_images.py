@@ -1107,9 +1107,8 @@ if __name__ == '__main__':
                 with shelve.open(output_path) as depth_images:
                     frame_depth_images = depth_images[str(rgbd_frame_idx)]
                 for depth_img, normal_img, confidence_map in frame_depth_images.values():
-                    ref_img = filtered_frame_images[rgbd_frame_idx]
                     # Depth values larger than depth_trunc are truncated to 0
-                    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(ref_img),
+                    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(filtered_frame_images[rgbd_frame_idx]),
                                                                                     o3d.geometry.Image(depth_img),
                                                                                     depth_scale=1.0, depth_trunc=np.inf,
                                                                                     convert_rgb_to_intensity=False)

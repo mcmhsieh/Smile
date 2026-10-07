@@ -132,7 +132,9 @@ if __name__ == '__main__':
         data = pickle.load(pickle_file)
         camera_pull_back_z = data['camera_pull_back_z']
         synthetic_camera_zoom = data['synthetic_camera_zoom']
-        camera_intrinsic_synthetic = data['camera_intrinsic_synthetic']
+        synthetic_image_size = data['synthetic_image_size']
+        synthetic_camera_intrinsics = data['synthetic_camera_intrinsics']
+        synthetic_camera_extrinsics = data['synthetic_camera_extrinsics']
         integrated_weighted_canvas_meshes = []
         for canvas_mesh_data in data['integrated_weighted_canvas_meshes']:
             canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(canvas_mesh_data['vertices']),
@@ -211,8 +213,6 @@ if __name__ == '__main__':
 
     ray_cast_cache = {}
     def ray_cast_grid_points(ref_frame_idx, camera_extrinsic, camera_intrinsic, w, h):
-        #rgbd_frame_idxs = mesh_frame_idxs[ref_frame_idx]
-        #cache_key = (rgbd_frame_idxs, tuple(map(tuple, camera_extrinsic)), tuple(map(tuple, camera_intrinsic)), w, h)
         cache_key = (ref_frame_idx, tuple(map(tuple, camera_extrinsic)), tuple(map(tuple, camera_intrinsic)), w, h)
 
         if cache_key not in ray_cast_cache:
@@ -221,7 +221,7 @@ if __name__ == '__main__':
 
             # Rays that exactly intersect vertices or edges may not register a raycasting hit due to floating point precision.
             # In such cases, t_hit values are returned as NaN. Workaround by adding ray jitter / offset.
-            # TODO: Use multiple ray sampling
+            # TODO: Consider using multiple ray sampling
             extrinsic_matrix = np.block([[np.identity(3), np.full((3, 1), fill_value=1e-6)], [0, 0, 0, 1]]) @ camera_extrinsic
             rays = o3d.t.geometry.RaycastingScene.create_rays_pinhole(intrinsic_matrix=camera_intrinsic,
                                                                       extrinsic_matrix=extrinsic_matrix,
@@ -327,9 +327,6 @@ if __name__ == '__main__':
     # Project the ray canvas intersection points onto the comparison frame's synthetic camera imaging plane.
     # Calculate the projection errors between the two sets of projected points.
 
-    synthetic_camera_extrinsics = [np.block([[np.identity(3), np.array([0, 0, camera_pull_back_z])[:, None]], [0, 0, 0, 1]]) @ camera_extrinsic
-                                   for camera_extrinsic in camera_extrinsics]
-
     interframe_canvas_projection_errors = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
     interframe_canvas_projection_error_weights = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
     #frame_synth_projection_score_histograms = []
@@ -338,16 +335,17 @@ if __name__ == '__main__':
     for ref_frame_idx in range(len(key_frame_indices)):
         print('Calculating interframe synthetic camera projection errors ref_frame_idx', ref_frame_idx)
 
-        img = frame_images[ref_frame_idx]
+        synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
 
+        img = frame_images[ref_frame_idx]
         h, w = img.shape[:2]
-        hj, wj = h * 3, w * 3
 
         grid_step = 15
-        camera_intrinsic_stepped = np.block([[camera_intrinsic_synthetic[:2, :2] / grid_step, (camera_intrinsic_synthetic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+        camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
-        assert wj % grid_step == 0 and hj % grid_step == 0
-        ws, hs = wj // grid_step, hj // grid_step
+        assert np.all(np.array(synthetic_image_size) % grid_step == 0)
+        wj, hj = synthetic_image_size
+        ws, hs = np.array(synthetic_image_size) // grid_step
         ref_xyzsg, _, xsg, ysg, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
 
         projection_error_images = []
@@ -357,10 +355,10 @@ if __name__ == '__main__':
 
             camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
 
-            ref_projected_points = camera_intrinsic_synthetic @ (camera_transform[:3, :3] @ ref_xyzsg + camera_transform[:3, 3:])
+            ref_projected_points = synthetic_camera_intrinsics[frame_idx] @ (camera_transform[:3, :3] @ ref_xyzsg + camera_transform[:3, 3:])
             ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
 
-            projected_points = camera_intrinsic_synthetic @ (camera_transform[:3, :3] @ xyzsg + camera_transform[:3, 3:])
+            projected_points = synthetic_camera_intrinsics[frame_idx] @ (camera_transform[:3, :3] @ xyzsg + camera_transform[:3, 3:])
             projected_points = projected_points[:2, :] / projected_points[2, :]
 
             projection_errors = np.linalg.norm(projected_points - ref_projected_points, axis=0)
@@ -552,21 +550,25 @@ if __name__ == '__main__':
     for ref_frame_idx in range(len(key_frame_indices)):
         print('Calculating interframe synthetic camera projection relative scores ref_frame_idx', ref_frame_idx)
 
-        img = frame_images[ref_frame_idx]
+        synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
 
+        img = frame_images[ref_frame_idx]
         h, w = img.shape[:2]
-        hj, wj = h * 3, w * 3
 
         grid_step = 15
-        camera_intrinsic_stepped = np.block([[camera_intrinsic_synthetic[:2, :2] / grid_step, (camera_intrinsic_synthetic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+        camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
-        assert wj % grid_step == 0 and hj % grid_step == 0
-        ws, hs = wj // grid_step, hj // grid_step
+        assert np.all(np.array(synthetic_image_size) % grid_step == 0)
+        wj, hj = synthetic_image_size
+        ws, hs = np.array(synthetic_image_size) // grid_step
         ref_xyzsg, _, xsg, ysg, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
 
         for frame_idx in range(len(key_frame_indices)):
 
             camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
+
+            synthetic_camera_intrinsic = synthetic_camera_intrinsics[frame_idx]
+            camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
             ref_projected_points = camera_intrinsic_stepped @ (camera_transform[:3, :3] @ ref_xyzsg + camera_transform[:3, 3:])
             ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
@@ -1133,21 +1135,21 @@ if __name__ == '__main__':
 
         print('synthesising primary_frame_idx', primary_frame_idx)
 
-        synthetic_camera_extrinsic = np.block([[np.identity(3), np.array([0, 0, camera_pull_back_z])[:, None]], [0, 0, 0, 1]]) @ camera_extrinsics[primary_frame_idx]
+        synthetic_camera_extrinsic = synthetic_camera_extrinsics[primary_frame_idx]
+        synthetic_camera_intrinsic = synthetic_camera_intrinsics[primary_frame_idx]
 
         img = frame_images[primary_frame_idx]
-
         h, w = img.shape[:2]
-        hj, wj = h * 3, w * 3
 
         grid_step = 5
-        camera_intrinsic_stepped = np.block([[camera_intrinsic_synthetic[:2, :2] / grid_step, (camera_intrinsic_synthetic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+        camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
-        assert wj % grid_step == 0 and hj % grid_step == 0
-        ws, hs = wj // grid_step, hj // grid_step
+        assert np.all(np.array(synthetic_image_size) % grid_step == 0)
+        wj, hj = synthetic_image_size
+        ws, hs = np.array(synthetic_image_size) // grid_step
         primary_mesh_xyzsg, xy1sg, _, _, _, _ = ray_cast_grid_points(primary_frame_idx, synthetic_camera_extrinsic, camera_intrinsic_stepped, ws, hs)
 
-        projected_points = camera_intrinsic_synthetic @ xy1sg
+        projected_points = synthetic_camera_intrinsic @ xy1sg
         projected_points = projected_points[:2, :] / projected_points[2, :]
         xys_extent = (np.amin(projected_points[0, :]) - grid_step / 2, np.amax(projected_points[0, :]) + grid_step / 2,
                       np.amax(projected_points[1, :]) + grid_step / 2, np.amin(projected_points[1, :]) - grid_step / 2)
@@ -1254,7 +1256,7 @@ if __name__ == '__main__':
 
         synthetic_frame_idxs = cv2.resize(secondary_frame_idxs, dsize=(wj, hj), fx=0, fy=0, interpolation=cv2.INTER_NEAREST)
 
-        xyzfg, _, xfg, yfg, _, _ = ray_cast_grid_points(primary_frame_idx, synthetic_camera_extrinsic, camera_intrinsic_synthetic, wj, hj)
+        xyzfg, _, xfg, yfg, _, _ = ray_cast_grid_points(primary_frame_idx, synthetic_camera_extrinsic, synthetic_camera_intrinsic, wj, hj)
 
         synthetic_frame_img = np.full((hj, wj, 3), fill_value=np.nan, dtype=np.float32)
 
@@ -1317,7 +1319,7 @@ if __name__ == '__main__':
         filtered_synthetic_frame_img[level_mask, :] = filtered_synthetic_frame_imgs[-1][level_mask, :]
 
         primary_frame_synthesis_elements[primary_frame_idx] = (img, h, w, hj, wj, xys_extent,
-                                                               synthetic_camera_extrinsic, camera_intrinsic_synthetic,
+                                                               synthetic_camera_extrinsic, synthetic_camera_intrinsic,
                                                                mapping_scores, xyzfg, xfg, yfg)
 
         plt.figure('Synthetic view', figsize=(24, 12))
@@ -1351,7 +1353,7 @@ if __name__ == '__main__':
         print('optimising primary_frame_idx', primary_frame_idx)
 
         (img, h, w, hj, wj, xys_extent,
-         synthetic_camera_extrinsic, camera_intrinsic_synthetic,
+         synthetic_camera_extrinsic, synthetic_camera_intrinsic,
          mapping_scores, xyzfg, xfg, yfg) = primary_frame_synthesis_elements[primary_frame_idx]
 
         # Optimise the frame mapping with a regularisation loss function
@@ -1495,7 +1497,7 @@ if __name__ == '__main__':
         gray_step = 2
         assert wj % gray_step == 0 and hj % gray_step == 0
         wg, hg = wj // gray_step, hj // gray_step
-        camera_intrinsic_gray = np.block([[camera_intrinsic_synthetic[:2, :2] / gray_step, (camera_intrinsic_synthetic[:2, 2:] + 0.5) / gray_step - 0.5], [0, 0, 1]])
+        camera_intrinsic_gray = np.block([[synthetic_camera_intrinsic[:2, :2] / gray_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / gray_step - 0.5], [0, 0, 1]])
 
         xyzsg, _, xsg, ysg, _, _ = ray_cast_grid_points(primary_frame_idx, synthetic_camera_extrinsic, camera_intrinsic_gray, wg, hg)
 
@@ -1762,7 +1764,7 @@ if __name__ == '__main__':
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'wb') as pickle_file:
             pickle.dump({'synthetic_camera_extrinsic': synthetic_camera_extrinsic,
-                         'camera_intrinsic_synthetic': camera_intrinsic_synthetic,
+                         'synthetic_camera_intrinsic': synthetic_camera_intrinsic,
                          'filtered_up_model_synthetic_frame_img': filtered_up_model_synthetic_frame_img,
                          'vertices': np.array(canvas_mesh.vertices, dtype=np.float32),
                          'triangles': np.array(canvas_mesh.triangles, dtype=np.int32),

@@ -450,6 +450,127 @@ if __name__ == '__main__':
     camera_pull_back_z = 10
     synthetic_camera_zoom = {(640, 360): 0.5, (480, 640): 1.0}[image_size] * (camera_pull_back_z / 8 + 1)
     camera_intrinsic_synthetic = np.block([[camera_intrinsic[:2, :2] * synthetic_camera_zoom, camera_intrinsic[:2, 2:] + np.array(image_size)[:, None]], [0, 0, 1]])
+    synthetic_camera_extrinsics = [np.block([[np.identity(3), np.array([0, 0, camera_pull_back_z])[:, None]], [0, 0, 0, 1]]) @ camera_extrinsic
+                                   for camera_extrinsic in camera_extrinsics]
+
+    # %%
+
+    combined_rgbd_pcd = o3d.geometry.PointCloud()
+    combined_rgbd_pcd_confidences = []
+    for rgbd_frame_idx in depth_image_frame_idxs:
+        with shelve.open(depth_images_input_path) as depth_images:
+            frame_depth_images = depth_images[str(rgbd_frame_idx)]
+        for depth_img, normal_img, confidence_map in frame_depth_images.values():
+            # Depth values larger than depth_trunc are truncated to 0
+            rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(filtered_frame_images[rgbd_frame_idx]),
+                                                                            o3d.geometry.Image(depth_img),
+                                                                            depth_scale=1.0, depth_trunc=np.inf,
+                                                                            convert_rgb_to_intensity=False)
+            rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
+                                                                      o3d.camera.PinholeCameraIntrinsic(depth_img.shape[1],
+                                                                                                        depth_img.shape[0],
+                                                                                                        camera_intrinsic),
+                                                                      camera_extrinsics[rgbd_frame_idx])
+
+            voxel_size = 0.5
+            output_pcd, cubic_id, original_indices = rgbd_pcd.voxel_down_sample_and_trace(voxel_size=voxel_size,
+                                                                                          min_bound=rgbd_pcd.get_min_bound()-voxel_size*0.5,
+                                                                                          max_bound=rgbd_pcd.get_max_bound()+voxel_size*0.5)
+
+            assert np.all(np.isfinite(confidence_map) == np.isfinite(depth_img))
+            confidence_map_values = confidence_map[np.isfinite(confidence_map)]
+            assert len(confidence_map_values) == len(rgbd_pcd.points)
+            for idxs in original_indices:
+                combined_rgbd_pcd_confidences.append(np.mean(confidence_map_values[idxs]))
+
+            combined_rgbd_pcd += output_pcd
+
+    combined_rgbd_pcd_confidences = np.array(combined_rgbd_pcd_confidences)
+
+    #visualise_geometries([combined_rgbd_pcd])
+
+    # %%
+
+    frame_projected_points = []
+    for ref_frame_idx in range(len(key_frame_indices)):
+        print('Computing integration rays ref_frame_idx', ref_frame_idx)
+
+        octree_pcd = o3d.geometry.PointCloud(combined_rgbd_pcd)
+        octree_pcd.transform(synthetic_camera_extrinsics[ref_frame_idx])
+
+        octree_xyz = np.array(octree_pcd.points, dtype=np.float32) / 30
+        octree_xyz[:, :2] /= octree_xyz[:, 2:]
+
+        bounding_box = o3d.geometry.AxisAlignedBoundingBox([-2, -2, 0], [2, 2, 2])
+        octree_xyz[np.any(octree_xyz <= bounding_box.min_bound, axis=1), :] = np.nan
+        octree_xyz[np.any(octree_xyz >= bounding_box.max_bound, axis=1), :] = np.nan
+
+        octree_pcd.points = o3d.utility.Vector3dVector(octree_xyz)
+        octree_pcd.remove_non_finite_points()
+
+        bounding_box_pcd = o3d.geometry.PointCloud(bounding_box.get_box_points())
+        bounding_box_pcd.colors = o3d.utility.Vector3dVector(np.zeros((8, 3)))
+        octree_pcd += bounding_box_pcd
+
+        node_confidences = np.pad(combined_rgbd_pcd_confidences[np.all(np.isfinite(octree_xyz), axis=1)], (0, 8))
+        assert len(node_confidences) == len(octree_pcd.points)
+
+        octree = o3d.geometry.Octree(max_depth=6)
+        octree.convert_from_point_cloud(octree_pcd, size_expand=0.0)
+
+        #visualise_geometries([octree])
+
+        node_sum_confidences = []
+        def traverse_fn(node, node_info):
+            assert isinstance(node, (o3d.geometry.OctreeInternalPointNode, o3d.geometry.OctreePointColorLeafNode))
+
+            if isinstance(node, o3d.geometry.OctreePointColorLeafNode):
+                assert node_info.depth == octree.max_depth
+                node_sum_confidences.append((np.sum(node_confidences[node.indices]), node_info.origin[:2], node.color))
+
+            return False
+
+        octree.traverse(traverse_fn)
+        node_sum_confidences.sort(key=lambda item: item[0], reverse=True)
+
+        node_sum_confidence_values = np.array([node_sum_confidence for node_sum_confidence, xy, colour in node_sum_confidences])
+        node_sum_confidence_threshold = np.mean(node_sum_confidence_values[node_sum_confidence_values >= 5]) / 2
+        print('node_sum_confidence_threshold', node_sum_confidence_threshold)
+
+        peak_node_sum_confidences = {}
+        for node_sum_confidence, xy, colour in node_sum_confidences:
+            if node_sum_confidence < node_sum_confidence_threshold:
+                break
+            xy_key = tuple(xy)
+            if xy_key not in peak_node_sum_confidences:
+                peak_node_sum_confidences[xy_key] = (node_sum_confidence, colour)
+
+        projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_node_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
+        frame_projected_points.append(projected_points)
+
+        projected_points_sizes = [node_sum_confidence for node_sum_confidence, colour in peak_node_sum_confidences.values()]
+        projected_points_colours = [colour for node_sum_confidence, colour in peak_node_sum_confidences.values()]
+
+        plt.figure('Projected point confidences', figsize=(16, 10))
+        setup_new_fig_page()
+        plt.suptitle(f'frame idx: {ref_frame_idx}')
+        plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+        plt.ylim(plt.ylim()[::-1])
+        plt.axis('equal')
+        plt.tight_layout()
+        stash_fig_page()
+
+    # %%
+
+    frame_projected_point_bounds = np.array([np.vstack([np.min(projected_points, axis=1), np.max(projected_points, axis=1)])
+                                             for projected_points in frame_projected_points])
+
+    image_size_granularity = 120
+    synthetic_image_size = tuple(np.ceil(np.max(frame_projected_point_bounds[:, 1, :] - frame_projected_point_bounds[:, 0, :], axis=0) / image_size_granularity + 1).astype(int) * image_size_granularity)
+    print('synthetic_image_size', synthetic_image_size)
+
+    synthetic_camera_intrinsics = [camera_intrinsic_synthetic + np.pad(camera_intrinsic_centre_adjustment[:, None], ((0, 1), (2, 0)))
+                                   for camera_intrinsic_centre_adjustment in 0.5 * (np.array(synthetic_image_size) - 1) - np.mean(frame_projected_point_bounds, axis=1)]
 
     # %%
 
@@ -462,18 +583,14 @@ if __name__ == '__main__':
     for ref_frame_idx in range(len(key_frame_indices)):
         print('Integrating TSDF ref_frame_idx', ref_frame_idx)
 
-        synthetic_camera_extrinsic = np.block([[np.identity(3), np.array([0, 0, camera_pull_back_z])[:, None]], [0, 0, 0, 1]]) @ camera_extrinsics[ref_frame_idx]
-
-        ref_img = frame_images[ref_frame_idx]
-
-        h, w = ref_img.shape[:2]
-        hj, wj = h * 3, w * 3
+        synthetic_camera_extrinsic = synthetic_camera_extrinsics[ref_frame_idx]
+        synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
 
         grid_step = 8
-        camera_intrinsic_stepped = np.block([[camera_intrinsic_synthetic[:2, :2] / grid_step, (camera_intrinsic_synthetic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+        camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
-        assert wj % grid_step == 0 and hj % grid_step == 0
-        ws, hs = wj // grid_step, hj // grid_step
+        assert np.all(np.array(synthetic_image_size) % grid_step == 0)
+        ws, hs = np.array(synthetic_image_size) // grid_step
 
         uvs = np.vstack([uv.flatten() for uv in np.mgrid[0:hs, 0:ws][::-1]])
         uvcs = uvs - camera_intrinsic_stepped[:2, 2:]
@@ -494,14 +611,14 @@ if __name__ == '__main__':
             frame_weight = cauchy(embedding_costs[ref_frame_idx, rgbd_frame_idx], 1 / 3)
             print(rgbd_frame_idx, np.round(np.rad2deg(interframe_angles[ref_frame_idx, rgbd_frame_idx]), 1), np.round(frame_weight, 3))
             if frame_weight > 0.01:
-                ref_img = filtered_frame_images[rgbd_frame_idx]
+                rgbd_img = filtered_frame_images[rgbd_frame_idx]
                 depth_imgs = []
                 confidence_maps = []
                 with shelve.open(depth_images_input_path) as depth_images:
                     frame_depth_images = depth_images[str(rgbd_frame_idx)]
                 for depth_img, normal_img, confidence_map in frame_depth_images.values():
                     # Depth values larger than depth_trunc are truncated to 0
-                    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(ref_img),
+                    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(rgbd_img),
                                                                                     o3d.geometry.Image(depth_img),
                                                                                     depth_scale=1.0, depth_trunc=np.inf,
                                                                                     convert_rgb_to_intensity=False)
@@ -548,7 +665,7 @@ if __name__ == '__main__':
 
                 # Integrate observations into voxel volume
                 integrate_tsdf_rgbd(tsdf_vox_coords_pcd, tsdf_weight_colour, tsdf_threshold,
-                                    np.array(ref_img, dtype=np.float32), depth_imgs, confidence_maps,
+                                    np.array(rgbd_img, dtype=np.float32), depth_imgs, confidence_maps,
                                     camera_intrinsic, camera_extrinsics[rgbd_frame_idx])
 
         depth_kernels = []
@@ -1051,7 +1168,9 @@ if __name__ == '__main__':
     with open(output_path, 'wb') as pickle_file:
         pickle.dump({'camera_pull_back_z': camera_pull_back_z,
                      'synthetic_camera_zoom': synthetic_camera_zoom,
-                     'camera_intrinsic_synthetic': camera_intrinsic_synthetic,
+                     'synthetic_image_size': synthetic_image_size,
+                     'synthetic_camera_intrinsics': synthetic_camera_intrinsics,
+                     'synthetic_camera_extrinsics': synthetic_camera_extrinsics,
                      'integrated_weighted_canvas_meshes': [{'vertices': np.array(canvas_mesh.vertices, dtype=np.float32),
                                                             'triangles': np.array(canvas_mesh.triangles),
                                                             'vertex_normals': np.array(canvas_mesh.vertex_normals, dtype=np.float32),
