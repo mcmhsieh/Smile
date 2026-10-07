@@ -759,33 +759,7 @@ if __name__ == '__main__':
 
         return sum(torch.mean(loss_component) for loss_component in loss_components.values()), loss_components
 
-    if False:
-        lr = 0.005
-        num_steps = 20000
-        convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 2000}
-        optimiser = torch.optim.Adam([model_target_frames], lr=lr)
-        lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
-                                   * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
-        losses = []
-        loss_components = {}
-        for optim_step in range(num_steps):
-            optimiser.zero_grad()
-            loss, loss_components = loss_fn()
-            loss.backward()
-            optimiser.step()
-            scheduler.step()
-            losses.append(loss.numpy(force=True))
-            loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
-            if optim_step % 100 == 0:
-                print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std, 'learning rate', scheduler.get_last_lr()[0])
-            if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['atol']:
-                break
-
-        print('len(losses)', len(losses))
-        print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
-        print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
-    elif True:
+    if True:
         lr = 0.005
         num_steps = 20000
         convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 5000}
@@ -828,6 +802,10 @@ if __name__ == '__main__':
                       'target_frame_activations_window_std', target_frame_activations_window_std, 'temperature', np.round(temperature, 3))
             if optim_step >= convergence_criterion['min_num_steps'] and target_frame_activations_window_std < convergence_criterion['atol']:
                 break
+
+    print('len(losses)', len(losses))
+    print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
+    print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
 
     target_frame_activations = scipy.special.expit(model_target_frames.numpy(force=True))
 
