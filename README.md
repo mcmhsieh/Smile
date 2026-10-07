@@ -9,9 +9,9 @@ Licence: [MIT](LICENSE)
 
 | Input frames | Generated output |
 | --- | --- |
-| <img src="docs/images/a401-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
-| <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" width="400px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" width="400px"/> |
-| <img src="docs/images/iy37-294frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" width="200px"/> | <img src="docs/images/iy37-294frames-iso34to37-view_synthesis-animated_output.webp" alt="Example synthetic panoramic view" width="200px"/> |
+| <img src="docs/images/a401-273frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" height="250px"/> | <img src="docs/images/a401-273frames-iso34to37-view_synthesis-output.jpg" alt="Example synthetic panoramic view" height="400px"/> |
+| <img src="docs/images/a401-351frames-iso45to35-animated_input_images.webp" alt="Example sequence of recorded frame images" height="250px"/> | <img src="docs/images/a401-351frames-iso45to35-view_synthesis-output.jpg" alt="Example synthetic panoramic view" height="250px"/> |
+| <img src="docs/images/iy37-294frames-iso34to37-animated_input_images.webp" alt="Example sequence of recorded frame images" height="350px"/> | <img src="docs/images/iy37-294frames-iso34to37-view_synthesis-animated_output.webp" alt="Example synthetic panoramic view" height="400px"/> |
 
 The above example input image sequences were recorded using these dental cameras:
 | | |
@@ -46,7 +46,7 @@ Activate the virtual environment and run the stages of the pipeline in sequence 
 
 If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/a401-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/a401-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over 7 minutes to complete depending on your system[^ExecutionTimes].
 
-<img src="docs/images/a401-30frames-iso46to46-view_synthesis-output.jpg" alt="Example synthesised view" width="400px"/>
+<img src="docs/images/a401-30frames-iso46to46-view_synthesis-output.jpg" alt="Example synthesised view" height="200px"/>
 
 ## Other example datasets
 
