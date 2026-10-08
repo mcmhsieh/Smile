@@ -1606,6 +1606,12 @@ if __name__ == '__main__':
              current_triangulated_idxs, current_triangulated_idxs_to_image_idxs,
              triangulated_normal_weights) = bundle_adjustment()
 
+            # Execute a number of ECC transform iterations for all the cross frames against the current frame,
+            # and then rerun the bundle adjustment optimisation to update the camera extrinsics using an augmented
+            # loss function that evaluates existing projection errors for existing triangulated points, plus the new
+            # projection errors for unmatched triangulated points with ECC transform refined mappings between
+            # each cross frame and the current frame.
+
             cross_warp_triangulated_points = {}
 
             for cross_frame_idx in range(current_frame_idx):
@@ -1625,6 +1631,20 @@ if __name__ == '__main__':
                  common_view_frustum_inlier_mask,
                  disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = results[1:]
 
+
+                # Fit a linear model to depth values of triangulated points vs their projection onto the reference cross frame to provide
+                # an interpolated & extrapolated surface for computing a warp map from cross to current frame coordinates.
+
+                # The ECC transform refinement uses 3 spaces:
+                #  - The cross frame and current frames between which the refined camera transform is being estimated
+                #  - The warped current frame mapped by the existing camera transform and the fitted linear depth prediction model
+
+                # |         Reference cross frame camera extrinsic             |             | Current frame camera extrinsic |
+                # | Cross frame space |   <--->   | Warped current frame space |    <--->    | Current frame space            |
+                #                     ECC transform                            Existing camera
+                #                     warp                                     transform + depth
+                #                                                              prediction model
+                #                                                              warp map
 
                 # TODO: Weighting and error threshold dependent on depth?
                 # TODO: Run regression in both cross and current frames of reference, then filter by the intersection of inliers
@@ -1727,7 +1747,10 @@ if __name__ == '__main__':
                                          cross_projected_predicted_points.T.reshape(imageSize_ext[::-1] + (2,)).astype(np.float32), None, cv2.INTER_LINEAR,
                                          borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
 
-                # gray_warp_map[reference cross frame coordinates] -> current frame coordinates mapped by the fitted linear model
+                # gray_warp_map[warped current frame coordinates]      --->       current frame coordinates
+                #                                                 Existing camera
+                #                                                 transform + depth
+                #                                                 prediction model
                 gray_warp_map = current_projected_predicted_points.T.reshape(imageSize_ext[::-1] + (2,)).astype(np.float32)
                 gray_warp = cv2.remap(gray,
                                       gray_warp_map, None, cv2.INTER_LINEAR,
@@ -1922,11 +1945,6 @@ if __name__ == '__main__':
                                     & (projected_points[1, :] > -0.5) & (projected_points[1, :] < imageSize[1] - 0.5)).reshape(imageSize_ext[::-1])
                 """
 
-                # Execute a few cv2.MOTION_AFFINE iterations for all the cross frames,
-                # and then rerun the pytorch optimiser to update the camera extrinsics with the loss function
-                # using existing projection errors for existing triangulated points, plus the new
-                # projection errors for unmatched triangulated points given the ECC warp between cross frames and current frame.
-
                 if False:
                     ref_img_ext_base_mask = cv2.remap(np.full(ref_img.shape[:2], fill_value=255, dtype=np.uint8),
                                                       cross_projected_predicted_points.T.reshape(imageSize_ext[::-1] + (2,)).astype(np.float32), None, cv2.INTER_LINEAR,
@@ -1973,6 +1991,10 @@ if __name__ == '__main__':
                                          or np.any(np.abs(shear) > np.pi / 6))
                     return translation, reflection, rotation_angle, scaling, shear, out_of_bounds
 
+
+                # Apply cv2.findTransformECC to the cross frame image as inputImage and warped current frame image as templateImage.
+                # The cross frame image is masked by the intersection of valid depth prediction inlier pixels and
+                # non specular reflection pixels (for both cross and current frame images).
 
                 warpMatrix = np.identity(3, dtype=np.float32)
                 for motionType, zoom, gaussFiltSize in [(cv2.MOTION_TRANSLATION, 1 / 16, 1),
@@ -2025,8 +2047,8 @@ if __name__ == '__main__':
                     ecc_uvs = ecc_uvs[:2, :] / ecc_uvs[2, :]
                     ecc_uv_grid = ecc_uvs.reshape(uv_grid.shape).astype(np.float32)
 
-                    # cross_flow_map[reference cross frame coordinates] -> reference cross frame coordinates of
-                    #                                                      warped current frame mapped by the ECC transform
+                    # cross_flow_map[reference cross frame coordinates]      --->     warped current frame coordinates
+                    #                                                   ECC transform
                     cross_flow_map = np.transpose(ecc_uv_grid, axes=(1, 2, 0))
 
                     border_value = 127
@@ -2081,17 +2103,28 @@ if __name__ == '__main__':
                             & (projected_points[0, :] > -0.5) & (projected_points[0, :] < imageSize[0] - 0.5)
                             & (projected_points[1, :] > -0.5) & (projected_points[1, :] < imageSize[1] - 0.5))
 
+                # inlier_uv: Triangulated points projected onto the reference cross frame and warped current frame
+                #            by the cross frame camera extrinsic (and intrinsic)
+                # xs, ys: inlier_uv filtered by projection errors of triangulated points and perspective distortion
+                # gray_warp_map_xys: Triangulated points mapped from projection onto the warped current frame to the current frame through the
+                #                    depth prediction model and the existing camera transform (prior to ECC transform refinement)
+                # cross_flow_map_xys: Triangulated points mapped from projection onto the cross frame through the ECC transform
+                #                     to the warped current frame
+                # gray_flow_xys: cross_flow_map_xys further mapped to the current frame through the depth prediction model
+                #                and the existing camera transform (prior to ECC transform refinement).
+                #                These points represent the ECC transform refined triangulated point stitches in the current frame.
+
                 xs, ys = inlier_uv[:, xys_mask]
 
-                # interpolate from reference cross frame coordinates to
-                # reference cross frame coordinates of warped current frame mapped by the ECC transform
+                # Interpolate from reference cross frame coordinates to warped current frame coordinates mapped by the ECC transform
                 interp = scipy.interpolate.RegularGridInterpolator((np.arange(cross_flow_map.shape[0]), np.arange(cross_flow_map.shape[1])),
                                                                    cross_flow_map[:, :, 0] + cross_flow_map[:, :, 1] * 1j,
                                                                    method='linear', bounds_error=False, fill_value=np.nan)
                 cross_flow_map_interp = interp((ys, xs)).astype(np.complex64)
                 cross_flow_map_xys = np.vstack([cross_flow_map_interp.real, cross_flow_map_interp.imag]).T
 
-                # interpolate from cross frame coordinates to current frame reference coordinates mapped by the fitted linear model
+                # Interpolate from warped current frame coordinates to current frame coordinates mapped by
+                # the depth prediction model and the existing camera transform (prior to ECC transform refinement)
                 interp = scipy.interpolate.RegularGridInterpolator((np.arange(gray_warp_map.shape[0]), np.arange(gray_warp_map.shape[1])),
                                                                    gray_warp_map[:, :, 0] + gray_warp_map[:, :, 1] * 1j,
                                                                    method='linear', bounds_error=False, fill_value=np.nan)
@@ -2128,144 +2161,10 @@ if __name__ == '__main__':
                     current_projected_points = camera_matrix @ current_triangulated_points[:, inlier_mask][:, xys_mask][:, cross_flow_mask]
                     current_projected_points = current_projected_points[:2, :] / current_projected_points[2, :]
 
-                    if gray_flow_xys.shape[1] >= 30:
-
-                        results = []
-                        for iter_idx in range(5000):
-                            np.random.seed(iter_idx)
-                            sample_fraction = np.random.uniform(1 / 3, 3 / 4)
-                            sample_size = np.clip(int(np.ceil(gray_flow_xys.shape[1] * sample_fraction)), 50, gray_flow_xys.shape[1])
-                            pts_idxs = np.random.choice(np.arange(gray_flow_xys.shape[1]), size=(sample_size,), replace=False)
-
-                            # Finds an object pose from 3D-2D point correspondences using the RANSAC scheme.
-                            #threshold = min(0.5 * (1 + motion_blur), 2.0)
-                            threshold = 3.0
-                            camera_transform = current_camera_extrinsic @ np.linalg.inv(cross_camera_extrinsic)
-                            rvec, jacobian = cv2.Rodrigues(camera_transform[:3, :3])
-                            tvec = camera_transform[:3, 3:]
-                            retval, rvec, tvec, inliers = cv2.solvePnPRansac(objectPoints=ref_gray_points[:, pts_idxs].T,
-                                                                             imagePoints=gray_flow_xys[:, pts_idxs].T,
-                                                                             cameraMatrix=camera_matrix, distCoeffs=np.zeros((4,)),
-                                                                             rvec=rvec, tvec=tvec, useExtrinsicGuess=True,
-                                                                             iterationsCount=10, reprojectionError=threshold, confidence=0.999, inliers=None,
-                                                                             flags=cv2.SOLVEPNP_ITERATIVE)
-                            #assert retval == True
-                            if retval:
-                                R, jacobian = cv2.Rodrigues(rvec)
-                                t = tvec
-
-                                camera_transform = np.block([[R, t], [0, 0, 0, 1]])
-
-                                object_points = camera_transform @ np.vstack([ref_gray_points, np.ones((ref_gray_points.shape[1],))])
-                                projected_points = camera_matrix @ object_points[:3, :]
-                                projected_points = projected_points[:2, :] / projected_points[2, :]
-
-                                #threshold = min(0.5 * (1 + motion_blur), 2.0)
-                                threshold = 6.0
-                                triangulated_points_inliers = np.where(np.linalg.norm(gray_flow_xys.T - projected_points.T, axis=1) < threshold)[0]
-
-                                # TODO: include in score the entropy of the distribution of errors in space, in terms of whether
-                                # errors are smaller in one region than another, or whether errors are more negative in one region
-                                # than another
-
-                                sigma_prev = 3.0
-                                score = (np.sum((ref_gray_triangulated_idxs_weights + 1)
-                                                * np.exp(-0.5 * np.power(np.linalg.norm(gray_flow_xys.T - projected_points.T, axis=1) / sigma_prev, 2)))
-                                         / np.sum(ref_gray_triangulated_idxs_weights + 1))
-
-                                results.append((rvec, tvec, triangulated_points_inliers, score))
-
-                            if sum([score for _, _, _, score in results]) >= 100:
-                                break
-
-                        results.sort(key=lambda item: item[3], reverse=True)
-                        print('cv2.solvePnPRansac len(results)', len(results))
-
-                        transform_delta_ref_vec = np.array([(1, 0, 8), (0, 0, 8), (0, 0, 9)]).T
-                        transform_delta_vecs = []
-                        result_scores = []
-                        for rvec, tvec, _, score in results:
-                            R, jacobian = cv2.Rodrigues(rvec)
-                            t = tvec
-                            transform_delta_vecs.append((R @ transform_delta_ref_vec + t - transform_delta_ref_vec).flatten())
-                            result_scores.append(score)
-                        transform_delta_vecs = np.array(transform_delta_vecs)
-                        result_scores = np.array(result_scores)[:, None]
-
-
-
-                        torch.set_default_device(torch.device('cpu'))
-                        for trial_countdown in np.arange(10)[::-1]:
-                            gmm = pomegranate.gmm.GeneralMixtureModel([pomegranate.distributions.Normal(covariance_type='diag') for idx in range(2)],
-                                                                      random_state=trial_countdown)
-                            try:
-                                gmm.fit(transform_delta_vecs, sample_weight=result_scores)
-                                break
-                            except ValueError as e:
-                                # TODO: debug ValueError: Variances must be positive.
-                                if trial_countdown == 0:
-                                    raise
-                                print('gmm.fit raised exception', e)
-                        unsorted_labels = gmm.predict(transform_delta_vecs).numpy()
-                        sort_idxs = np.array([unsorted_labels[0], 1 - unsorted_labels[0]])
-                        label_map = {sort_idx: idx for idx, sort_idx in enumerate(sort_idxs)}
-                        labels = np.array([label_map[label] for label in unsorted_labels])
-                        gmm_priors = gmm.priors.numpy()[sort_idxs]
-                        gmm_distributions = [gmm.distributions[idx] for idx in sort_idxs]
-
-                        centroid_log_probs = np.array([[gmm_distribution.log_probability(gmm_sample_distribution.means.numpy()[None, :]).numpy()[0]
-                                                        for gmm_sample_distribution in gmm_distributions]
-                                                       for gmm_distribution in gmm_distributions])
-                        for idx in range(2):
-                            print(f'gmm[{idx}] prior', np.round(gmm_priors[idx], 3))
-                            print(f'gmm[{idx}] centroid', np.round(gmm_distributions[idx].means.numpy(), 3))
-                            print(f'gmm[{idx}] std devs', np.round(np.sqrt(gmm_distributions[idx].covs.numpy()), 3))
-                            print(f'gmm[{idx}] centroid_log_probs', centroid_log_probs[idx, :])
-
-                        log_prob_transform_delta_vecs = gmm_distributions[0].log_probability(transform_delta_vecs).numpy()
-                        sample_vec_idxs = (labels == 1) & (log_prob_transform_delta_vecs < centroid_log_probs[0, 0] - 3.0)
-                        sample_vec_idxs[0] = True
-                        sample_vec_idxs = np.where(sample_vec_idxs)[0][:10]
-                        sample_vec_labels = labels[sample_vec_idxs]
-                        sample_vecs = transform_delta_vecs[sample_vec_idxs, :]
-                        for idx, (label, sample_vec) in enumerate(zip(sample_vec_labels, sample_vecs)):
-                            print(f'sample_vecs[{idx}]', f'gmm[{label}]', np.round(sample_vec, 3))
-                        print('sample vec scores', np.round(result_scores.flatten()[sample_vec_idxs], 3))
-                        for idx in range(2):
-                            print(f'gmm[{idx}] log_prob(sample_vecs)', np.round(gmm_distributions[idx].log_probability(sample_vecs).numpy(), 3))
-                        torch.set_default_device(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-
-                        """
-                        transform_delta_centroid = gmm.distributions[sort_idxs[0]].means.numpy().reshape(transform_delta_ref_vec.shape)
-                        source_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(transform_delta_ref_vec.T))
-                        target_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector((transform_delta_ref_vec + transform_delta_centroid).T))
-                        transform_estimation = o3d.pipelines.registration.TransformationEstimationPointToPoint()
-                        camera_transform = transform_estimation.compute_transformation(source=source_pcd, target=target_pcd,
-                                                                                       corres=o3d.utility.Vector2iVector([(idx, idx) for idx in range(3)]))
-                        rvec, jacobian = cv2.Rodrigues(camera_transform[:3, :3])
-                        tvec = camera_transform[:3, 3:]
-                        """
-
-                        rvec, tvec, triangulated_points_inliers, score = results[0]
-
-                        print('cv2.solvePnPRansac extrinsic rotation', rvec.flatten())
-                        print('cv2.solvePnPRansac extrinsic translation', tvec.flatten())
-                        print('cv2.solvePnPRansac len(triangulated_points_inliers)', len(triangulated_points_inliers))
-                        print('cv2.solvePnPRansac inliers score', score)
-
-                        R, jacobian = cv2.Rodrigues(rvec)
-                        t = tvec
-                        E = R @ np.cross(np.identity(3), t.T)
-                        camera_transform = np.block([[R, t], [0, 0, 0, 1]])
-
-
-
-
                     err_inlier_mask = sample_weight_mask & (np.abs(model_errs) < ransac_threshold)
                     err_outlier_mask = sample_weight_mask & (np.abs(model_errs) >= ransac_threshold)
 
-
-                    plt.figure('Cross flow refinement experiment 1', figsize=(24, 12))
+                    plt.figure('ECC transform warp', figsize=(24, 12))
                     setup_new_fig_page()
                     plt.suptitle(f'cross, current frame idxs: {cross_frame_idx}, {current_frame_idx}')
                     ax = plt.subplot(3, 4, 1)
@@ -2305,7 +2204,7 @@ if __name__ == '__main__':
                     plt.tight_layout()
                     stash_fig_page()
 
-                    plt.figure('Cross flow refinement experiment 2', figsize=(24, 12))
+                    plt.figure('ECC transform triangulated point projection refinement', figsize=(24, 12))
                     setup_new_fig_page()
                     plt.suptitle(f'cross, current frame idxs: {cross_frame_idx}, {current_frame_idx}')
                     plt.subplot(2, 3, 1)
@@ -2330,9 +2229,8 @@ if __name__ == '__main__':
                     stash_fig_page()
 
 
-            # Augment the loss function with projection errors in the current frame of reference
-            # for unmatched triangulated points mapped by the estimated ECC warp transforms between each
-            # cross frame and the current frame
+            # Augment the loss function with projection errors in the current frame for unmatched triangulated points
+            # with ECC transform refined mappings between each cross frame and the current frame
 
             image_point_weights = key_frame_image_point_weights[current_frame_idx]
             camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
