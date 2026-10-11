@@ -1773,139 +1773,8 @@ if __name__ == '__main__':
                 ref_gray_ext_attenuated = np.round((ref_gray_ext.astype(np.float32) - border_value) * cauchy(np.nan_to_num(cross_model_errs, nan=np.inf), 1.0) + border_value).astype(np.uint8)
                 #gray_warp = np.round((gray_warp.astype(np.float32) - border_value) * cauchy(np.nan_to_num(cross_model_errs, nan=np.inf), 1.0) + border_value).astype(np.uint8)
 
-
-                """
-                # prev(y, x) ~ next(y + flow(y, x)[1], x + flow(y, x)[0])
-                # when cv2.OPTFLOW_FARNEBACK_GAUSSIAN is applied, flow_sigma = (winsize // 2) * 0.3
-                # poly_n: size of the pixel neighborhood used to find polynomial expansion in each pixel;
-                #         larger values mean that the image will be approximated with smoother surfaces,
-                #         yielding more robust algorithm and more blurred motion field, typically poly_n=5 or 7.
-                # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
-                #             for the polynomial expansion;
-                #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
-                # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
-                #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
-                zoom = 0.25
-                cross_flow = cv2.calcOpticalFlowFarneback(prev=cv2.resize(ref_gray_ext_attenuated, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
-                                                          next=cv2.resize(gray_warp, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
-                                                          flow=None,
-                                                          #pyr_scale=0.75, levels=3, winsize=51, iterations=2,
-                                                          #poly_n=13, poly_sigma=2.8, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                                                          #pyr_scale=0.95, levels=30, winsize=51, iterations=2,
-                                                          #poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                                                          #pyr_scale=0.95, levels=30, winsize=101, iterations=30,
-                                                          #poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                                                          # winsize=25 with zoom = 0.25 translates to a Gaussian window size of 100
-                                                          # which means that each iteration takes into account up to 100 / 2 = 50 pixels
-                                                          # in range at the base of the pyramid when calculating the weighted average of A.T @ A terms.
-                                                          # Then accounting for pyr_scale ** (levels - 1), for pyr_scale=0.75, levels=5
-                                                          # 50 / (0.75**5) = 158.0 pixels of range at the top of the pyramid
-                                                          pyr_scale=0.75, levels=5, winsize=25, iterations=30,
-                                                          poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                if False:
-                    cross_flow = cv2.calcOpticalFlowFarneback(prev=cv2.resize(ref_gray_ext_attenuated, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
-                                                              next=cv2.resize(gray_warp, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
-                                                              flow=cross_flow,
-                                                              #pyr_scale=0.75, levels=3, winsize=51, iterations=2,
-                                                              #poly_n=13, poly_sigma=2.8, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                                                              #pyr_scale=0.95, levels=30, winsize=51, iterations=2,
-                                                              #poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                                                              pyr_scale=0.95, levels=30, winsize=13, iterations=30,
-                                                              poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN+cv2.OPTFLOW_USE_INITIAL_FLOW)
-                cross_flow = cv2.resize(cross_flow, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_LINEAR) / zoom
-
-                cross_flow_map = (np.transpose(uv_grid, axes=(1, 2, 0)) + cross_flow).astype(np.float32)
-                gray_cross_warp = cv2.remap(gray_warp,
-                                            cross_flow_map, None, cv2.INTER_LINEAR,
-                                            borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
-
-
-                # prev(y, x) ~ next(y + flow(y, x)[1], x + flow(y, x)[0])
-                # when cv2.OPTFLOW_FARNEBACK_GAUSSIAN is applied, flow_sigma = (winsize // 2) * 0.3
-                # poly_n: size of the pixel neighborhood used to find polynomial expansion in each pixel;
-                #         larger values mean that the image will be approximated with smoother surfaces,
-                #         yielding more robust algorithm and more blurred motion field, typically poly_n=5 or 7.
-                # poly_sigma: standard deviation of the Gaussian that is used to smooth derivatives used as a basis
-                #             for the polynomial expansion;
-                #             for poly_n=5, you can set poly_sigma=1.1, for poly_n=7, a good value would be poly_sigma=1.5.
-                # Scaled flow regularisation window and polynomial model window sizes at the top of the pyramid:
-                #   winsize / pyr_scale ** (levels - 1), poly_n / pyr_scale ** (levels - 1)
-                zoom = 0.25
-                cross_flow_warp = cv2.calcOpticalFlowFarneback(prev=cv2.resize(gray_warp, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
-                                                               next=cv2.resize(ref_gray_ext_attenuated, (0, 0), fx=zoom, fy=zoom, interpolation=cv2.INTER_AREA),
-                                                               flow=None,
-                                                               # winsize=25 with zoom = 0.25 translates to a Gaussian window size of 100
-                                                               # which means that each iteration takes into account up to 100 / 2 = 50 pixels
-                                                               # in range at the base of the pyramid when calculating the weighted average of A.T @ A terms.
-                                                               # Then accounting for pyr_scale ** (levels - 1), for pyr_scale=0.75, levels=5
-                                                               # 50 / (0.75**5) = 158.0 pixels of range at the top of the pyramid
-                                                               pyr_scale=0.75, levels=5, winsize=25, iterations=30,
-                                                               poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN)
-                cross_flow_warp = cv2.resize(cross_flow_warp, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_LINEAR) / zoom
-
-                cross_flow_warp_map = (np.transpose(uv_grid, axes=(1, 2, 0)) + cross_flow_warp).astype(np.float32)
-                ref_gray_cross_warp = cv2.remap(ref_gray_ext_attenuated,
-                                                cross_flow_warp_map, None, cv2.INTER_LINEAR,
-                                                borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
-
-
-                # Consistency error between cross->current and current->cross cross flow
-                interp = scipy.interpolate.RegularGridInterpolator((np.arange(cross_flow_warp_map.shape[0]), np.arange(cross_flow_warp_map.shape[1])),
-                                                                   cross_flow_warp_map[:, :, 0] + cross_flow_warp_map[:, :, 1] * 1j,
-                                                                   method='linear', bounds_error=False, fill_value=np.nan)
-                cross_flow_warp_map_interp = interp((cross_flow_map[:, :, 1], cross_flow_map[:, :, 0])).astype(np.complex64)
-                cross_flow_consistency_err = np.linalg.norm(np.stack([cross_flow_warp_map_interp.real, cross_flow_warp_map_interp.imag], axis=-1)
-                                                             - np.transpose(uv_grid, axes=(1, 2, 0)), axis=-1)
-
-
-                sample_weight_mask = sample_weight > 0.1 * np.median(sample_weight)
-
-                projected_points = camera_matrix @ cross_triangulated_points[:, inlier_mask]
-                projected_points = projected_points[:2, :] / projected_points[2, :]
-
-                xys_mask = (sample_weight_mask & (np.abs(model_errs) < ransac_threshold * 3)
-                            & (projected_points[0, :] > -0.5) & (projected_points[0, :] < imageSize[0] - 0.5)
-                            & (projected_points[1, :] > -0.5) & (projected_points[1, :] < imageSize[1] - 0.5))
-
-                xs, ys = inlier_uv[:, xys_mask]
-
-                interp = scipy.interpolate.RegularGridInterpolator((np.arange(cross_flow.shape[0]), np.arange(cross_flow.shape[1])),
-                                                                   cross_flow[:, :, 0] + cross_flow[:, :, 1] * 1j,
-                                                                   method='linear', bounds_error=False, fill_value=np.nan)
-                cross_flow_interp = interp((ys, xs)).astype(np.complex64)
-                cross_flow_xys = np.vstack([cross_flow_interp.real, cross_flow_interp.imag]).T
-
-                interp = scipy.interpolate.RegularGridInterpolator((np.arange(gray_warp_map.shape[0]), np.arange(gray_warp_map.shape[1])),
-                                                                   gray_warp_map[:, :, 0] + gray_warp_map[:, :, 1] * 1j,
-                                                                   method='linear', bounds_error=False, fill_value=np.nan)
-                gray_warp_map_interp = interp((ys, xs)).astype(np.complex64)
-                gray_warp_map_xys = np.vstack([gray_warp_map_interp.real, gray_warp_map_interp.imag]).T
-
-                gray_flow_interp = interp((ys + cross_flow_xys[:, 1], xs + cross_flow_xys[:, 0])).astype(np.complex64)
-                gray_flow_xys = np.vstack([gray_flow_interp.real, gray_flow_interp.imag])
-
-                interp = scipy.interpolate.RegularGridInterpolator((np.arange(cross_flow_consistency_err.shape[0]), np.arange(cross_flow_consistency_err.shape[1])),
-                                                                   cross_flow_consistency_err,
-                                                                   method='linear', bounds_error=False, fill_value=np.nan)
-                cross_flow_consistency_err_xys = interp((ys, xs)).astype(np.float32)
-
-                cross_image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[cross_frame_idx]
-                cross_image_triangulated_point_idxs = cross_image_to_triangulated_point_idxs[(cross_image_to_triangulated_point_idxs >= 0)
-                                                                                             & (cross_image_to_triangulated_point_idxs < len(triangulated_idxs_weights))]
-                cross_image_triangulated_points = np.full((len(triangulated_idxs_weights),), fill_value=False, dtype=bool)
-                cross_image_triangulated_points[cross_image_triangulated_point_idxs] = True
-                cross_image_triangulated_points_xys = cross_image_triangulated_points[inlier_mask][xys_mask]
-
-                cross_flow_mask = ((gray_flow_xys[0, :] > -0.5) & (gray_flow_xys[0, :] < imageSize[0] - 0.5)
-                                   & (gray_flow_xys[1, :] > -0.5) & (gray_flow_xys[1, :] < imageSize[1] - 0.5)
-                                   & (gray_warp_map_xys[:, 0] > -0.5) & (gray_warp_map_xys[:, 0] < imageSize[0] - 0.5)
-                                   & (gray_warp_map_xys[:, 1] > -0.5) & (gray_warp_map_xys[:, 1] < imageSize[1] - 0.5)
-                                   & (cross_flow_consistency_err_xys < 6.0)
-                                   & cross_image_triangulated_points_xys)
-                """
-
-                # TODO: Filter image edges and then blur to produce gradients throughout the image
-                # that will help convergence
+                # TODO: Consider filtering image edges and then blurring to produce gradients throughout the image
+                #       that may help convergence
                 if False:
                     ref_img_ext = cv2.remap(np.mean(ref_img, axis=-1).astype(np.uint8),
                                             cross_projected_predicted_points.T.reshape(imageSize_ext[::-1] + (2,)).astype(np.float32), None, cv2.INTER_LINEAR,
@@ -1936,7 +1805,6 @@ if __name__ == '__main__':
                                          gray_warp_map, None, cv2.INTER_LINEAR,
                                          borderMode=cv2.BORDER_CONSTANT, borderValue=border_value**2/255)
 
-
                 """
                 projected_points = camera_matrix @ xyzs
                 projected_points = projected_points[:2, :] / projected_points[2, :]
@@ -1961,7 +1829,6 @@ if __name__ == '__main__':
                     img_ext_base_mask = cv2.remap((~img_mask).astype(np.uint8) * 255,
                                                   gray_warp_map, None, cv2.INTER_LINEAR,
                                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-
 
                 def zoom_matrix(zoom):
                     return (np.array([[1, 0, -0.5], [0, 1, -0.5], [0, 0, 1]], dtype=np.float32)
