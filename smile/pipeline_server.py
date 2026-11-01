@@ -75,7 +75,7 @@ def httpd_main(httpd):
         window.schedule_destroy()
 
 def start_pipeline_server():
-    # Create an independent / daemon process by starting a child process and exiting this parent process.
+    # Create an independent / daemon process by starting a child process and exiting its parent process.
     # For some reason, creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     # still creates a child process within the process tree.
     subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH])
@@ -178,4 +178,7 @@ if __name__ == '__main__':
             else:
                 raise
     else:
-        subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'])
+        # Create an independent / daemon process by starting a child process without inheriting
+        # standard I/O streams and then immediately exiting this process to make it an orphan.
+        subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
