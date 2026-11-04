@@ -208,6 +208,46 @@ if __name__ == '__main__':
 
     # %%
 
+    def get_frame_idxs_cmap(frame_idxs, N):
+        assert np.all(frame_idxs) >= 0
+        padded_frame_idxs = np.pad(frame_idxs, pad_width=((1, 1), (1, 1)), mode='constant', constant_values=-1)
+        neighbouring_frame_idxs = np.stack([padded_frame_idxs[1:-1, 1:-1],
+                                            padded_frame_idxs[:-2, :-2],
+                                            padded_frame_idxs[1:-1, :-2],
+                                            padded_frame_idxs[2:, :-2],
+                                            padded_frame_idxs[:-2, 1:-1],
+                                            padded_frame_idxs[2:, 1:-1],
+                                            padded_frame_idxs[:-2, 2:],
+                                            padded_frame_idxs[1:-1, 2:],
+                                            padded_frame_idxs[2:, 2:]],
+                                           axis=-1)
+        neighbour_map = collections.defaultdict(set)
+        for idxs in neighbouring_frame_idxs.reshape((-1, neighbouring_frame_idxs.shape[-1])):
+            neighbour_map[idxs[0]].update(idxs[1:])
+        G = networkx.Graph()
+        for idx, neighbour_idxs in neighbour_map.items():
+            for neighbour_idx in neighbour_idxs - set([idx, -1]):
+                G.add_edge(idx, neighbour_idx)
+        graph_colouring = networkx.coloring.greedy_color(G)
+        graph_colouring_counts = collections.Counter(graph_colouring.values())
+        assert sorted(graph_colouring_counts) == list(range(len(graph_colouring_counts)))
+        graph_colouring_cmap_boundaries = np.cumsum([0] + [graph_colouring_counts[graph_colour] for graph_colour in sorted(graph_colouring_counts)]) / len(graph_colouring)
+        graph_colour_cmap_boundaries = np.vstack([graph_colouring_cmap_boundaries[:-1], graph_colouring_cmap_boundaries[1:]]).T
+        graph_colour_cmap_boundary_contraction = 0.2 / max(len(graph_colouring_counts) - 1, 1)
+        graph_colour_cmap_boundaries[1:, 0] += graph_colour_cmap_boundary_contraction
+        graph_colour_cmap_boundaries[:-1, 1] -= graph_colour_cmap_boundary_contraction
+        cmap_colours = np.zeros((N, 4))
+        for graph_colour in sorted(graph_colouring_counts):
+            cmap_seq = list(matplotlib.colormaps['nipy_spectral'](np.linspace(graph_colour_cmap_boundaries[graph_colour, 0],
+                                                                              graph_colour_cmap_boundaries[graph_colour, 1],
+                                                                              graph_colouring_counts[graph_colour])))
+            for frame_idx, colour_idx in graph_colouring.items():
+                if colour_idx == graph_colour:
+                    cmap_colours[frame_idx] = cmap_seq.pop(0)
+        return matplotlib.colors.ListedColormap(cmap_colours)
+
+    # %%
+
     # Select target view synthesis frames by maximising a function of the frame mesh ray cast grid mapping score
     # and the relative surface area of the frame mesh.
 
@@ -552,16 +592,13 @@ if __name__ == '__main__':
 
         synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
 
-        img = frame_images[ref_frame_idx]
-        h, w = img.shape[:2]
-
         grid_step = 15
         camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
         assert np.all(np.array(synthetic_image_size) % grid_step == 0)
         wj, hj = synthetic_image_size
         ws, hs = np.array(synthetic_image_size) // grid_step
-        ref_xyzsg, _, xsg, ysg, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
+        ref_xyzsg, _, _, _, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
 
         for frame_idx in range(len(key_frame_indices)):
 
@@ -612,6 +649,8 @@ if __name__ == '__main__':
     frame_synth_projection_score_image_means = [np.nanmean(frame_synth_projection_score_image)
                                                 for frame_synth_projection_score_image in frame_synth_projection_score_images]
 
+    # Interframe support is the product of low interframe_canvas_projection_errors (RMS of projection errors between frame canvasses)
+    # and high interframe_canvas_projection_error_weights (IOU of projected canvas regions)
     interframe_support = cauchy(interframe_canvas_projection_errors, 20) * interframe_canvas_projection_error_weights
     model_interframe_support = torch.tensor(interframe_support, dtype=torch.float32)
     model_interframe_synth_projection_relative_scores = torch.tensor(interframe_synth_projection_relative_scores, dtype=torch.float32)
@@ -621,14 +660,15 @@ if __name__ == '__main__':
     def loss_fn():
         loss_components = {}
 
-        # Calculate predicted projection scores for all frames given the model frame scores
+        # Calculate predicted_score(f2 | f1) = the 2D predicted projection scores for all frames, given the 1D model frame scores
         conditional_frame_synth_projection_score_predictions = model_frame_synth_projection_scores[:, None] + model_interframe_synth_projection_relative_score_scaling * model_interframe_synth_projection_relative_scores
         conditional_frame_synth_projection_score_predictions_sigmoid = torch.nn.functional.sigmoid(4 * (conditional_frame_synth_projection_score_predictions - 0.5))
         # Compute the errors between predicted projection scores and model frame scores
-        # error(f1, f2) = predicted_score(f2 | f1) - model_score(f2)
+        # prediction_error(f1, f2) = predicted_score(f2 | f1) - model_score(f2)
         model_frame_synth_projection_scores_sigmoid = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_scores - 0.5))
         model_frame_synth_projection_score_errors = model_frame_synth_projection_scores_sigmoid - conditional_frame_synth_projection_score_predictions_sigmoid
 
+        # Weight prediction_error(f1, f2) by the degree of interframe support
         loss_components['errors'] = model_interframe_support * torch.pow(model_frame_synth_projection_score_errors, 2)
 
         loss_components['mean'] = 1e-2 * torch.pow(torch.mean(model_frame_synth_projection_scores) - np.mean(frame_synth_projection_score_image_means), 2)
@@ -837,6 +877,8 @@ if __name__ == '__main__':
     plt.tight_layout()
 
     # %%
+
+    # Visualise the selected target frames within some embedding spaces
 
     interframe_dissimilarities = 1 - cauchy(0.5 * (interframe_canvas_projection_errors + interframe_canvas_projection_errors.T), 50)
     interframe_dissimilarity_weights = 0.5 * (interframe_canvas_projection_error_weights + interframe_canvas_projection_error_weights.T)
@@ -1066,45 +1108,6 @@ if __name__ == '__main__':
 
     # TODO: only map the set of coherent / low cost secondary frames for each primary frame
 
-    def get_frame_idxs_cmap(frame_idxs, N):
-        assert np.all(frame_idxs) >= 0
-        padded_frame_idxs = np.pad(frame_idxs, pad_width=((1, 1), (1, 1)), mode='constant', constant_values=-1)
-        neighbouring_frame_idxs = np.stack([padded_frame_idxs[1:-1, 1:-1],
-                                            padded_frame_idxs[:-2, :-2],
-                                            padded_frame_idxs[1:-1, :-2],
-                                            padded_frame_idxs[2:, :-2],
-                                            padded_frame_idxs[:-2, 1:-1],
-                                            padded_frame_idxs[2:, 1:-1],
-                                            padded_frame_idxs[:-2, 2:],
-                                            padded_frame_idxs[1:-1, 2:],
-                                            padded_frame_idxs[2:, 2:]],
-                                           axis=-1)
-        neighbour_map = collections.defaultdict(set)
-        for idxs in neighbouring_frame_idxs.reshape((-1, neighbouring_frame_idxs.shape[-1])):
-            neighbour_map[idxs[0]].update(idxs[1:])
-        G = networkx.Graph()
-        for idx, neighbour_idxs in neighbour_map.items():
-            for neighbour_idx in neighbour_idxs - set([idx, -1]):
-                G.add_edge(idx, neighbour_idx)
-        graph_colouring = networkx.coloring.greedy_color(G)
-        graph_colouring_counts = collections.Counter(graph_colouring.values())
-        assert sorted(graph_colouring_counts) == list(range(len(graph_colouring_counts)))
-        graph_colouring_cmap_boundaries = np.cumsum([0] + [graph_colouring_counts[graph_colour] for graph_colour in sorted(graph_colouring_counts)]) / len(graph_colouring)
-        graph_colour_cmap_boundaries = np.vstack([graph_colouring_cmap_boundaries[:-1], graph_colouring_cmap_boundaries[1:]]).T
-        graph_colour_cmap_boundary_contraction = 0.2 / max(len(graph_colouring_counts) - 1, 1)
-        graph_colour_cmap_boundaries[1:, 0] += graph_colour_cmap_boundary_contraction
-        graph_colour_cmap_boundaries[:-1, 1] -= graph_colour_cmap_boundary_contraction
-        cmap_colours = np.zeros((N, 4))
-        for graph_colour in sorted(graph_colouring_counts):
-            cmap_seq = list(matplotlib.colormaps['nipy_spectral'](np.linspace(graph_colour_cmap_boundaries[graph_colour, 0],
-                                                                              graph_colour_cmap_boundaries[graph_colour, 1],
-                                                                              graph_colouring_counts[graph_colour])))
-            for frame_idx, colour_idx in graph_colouring.items():
-                if colour_idx == graph_colour:
-                    cmap_colours[frame_idx] = cmap_seq.pop(0)
-        cmap = matplotlib.colors.ListedColormap(cmap_colours, N=mapping_scores.shape[0])
-        return cmap
-
     plt.close('Synthetic frame scores')
     plt.close('Synthetic view')
 
@@ -1305,7 +1308,7 @@ if __name__ == '__main__':
         plt.suptitle(f'primary frame idx: {primary_frame_idx}')
         ax = plt.subplot(2, 2, 1)
         synthetic_frame_cmap = get_frame_idxs_cmap(synthetic_frame_idxs, N=mapping_scores.shape[0])
-        plt.imshow(synthetic_frame_idxs, cmap=synthetic_frame_cmap, vmin=0, vmax=mapping_scores.shape[0], interpolation_stage='rgba')
+        plt.imshow(synthetic_frame_idxs, cmap=synthetic_frame_cmap, vmin=0, vmax=synthetic_frame_cmap.N-1, interpolation_stage='rgba')
         ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
         ax.set_facecolor('grey')
         plt.imshow(synthetic_frame_img / 255)
@@ -1760,7 +1763,7 @@ if __name__ == '__main__':
         ncols = 3
         nrows = int(np.ceil((2 + len(loss_components)) / ncols))
         ax = plt.subplot(nrows, ncols, 1)
-        plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=model_mapping_scores.shape[0],
+        plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1,
                    extent=xys_extent, interpolation_stage='rgba')
         ax = plt.subplot(nrows, ncols, 2, sharex=ax, sharey=ax)
         ax.set_facecolor('grey')
@@ -1786,7 +1789,7 @@ if __name__ == '__main__':
         setup_new_fig_page()
         plt.suptitle(f'primary frame idx: {primary_frame_idx}')
         ax = plt.subplot(3, 3, 1)
-        plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=model_mapping_scores.shape[0], interpolation_stage='rgba')
+        plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba')
         plt.title('up_model_frames_idxs')
         ax = plt.subplot(3, 3, 2, sharex=ax, sharey=ax)
         ax.set_facecolor('grey')
@@ -1840,13 +1843,13 @@ if __name__ == '__main__':
         setup_new_fig_page()
         plt.suptitle(f'primary frame idx: {primary_frame_idx}')
         ax = plt.subplot(2, 3, 1)
-        plt.imshow(model_mapping_scores_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores.shape[0],
+        plt.imshow(model_mapping_scores_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores_cmap.N-1,
                    extent=xys_extent, interpolation_stage='rgba')
         plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-        plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=model_mapping_scores.shape[0],
+        plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1,
                    extent=xys_extent, interpolation_stage='rgba')
         plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
-        plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=model_mapping_scores.shape[0], interpolation_stage='rgba')
+        plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba')
         ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
         ax.set_facecolor('grey')
         plt.imshow(np.clip(up_model_synthetic_frame_img / 255, 0, 1))
