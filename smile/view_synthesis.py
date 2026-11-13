@@ -17,6 +17,7 @@ import builtins
 import warnings
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -67,9 +68,14 @@ if __name__ == '__main__':
 
     # %%
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'
@@ -135,6 +141,7 @@ if __name__ == '__main__':
         synthetic_image_size = data['synthetic_image_size']
         synthetic_camera_intrinsics = data['synthetic_camera_intrinsics']
         synthetic_camera_extrinsics = data['synthetic_camera_extrinsics']
+        model_depth_images = data['model_depth_images']
         integrated_weighted_canvas_meshes = []
         for canvas_mesh_data in data['integrated_weighted_canvas_meshes']:
             canvas_mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(canvas_mesh_data['vertices']),
@@ -303,6 +310,9 @@ if __name__ == '__main__':
     # Cast rays from each reference frame's camera onto the canvas meshes of the reference frame and comparison frame.
     # Project the ray canvas intersection points onto the comparison frame's imaging plane.
     # Calculate the projection errors between the two sets of projected points.
+    # This serves as a measure of interframe structural dissimilarities/incompatibilities between camera frames which
+    # is used to calculate the interframe cost (the cost between two frames at their mapped interface in the synthetic view).
+
     interframe_projection_errors = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
     for ref_frame_idx in range(len(key_frame_indices)):
         print('Calculating interframe projection errors ref_frame_idx', ref_frame_idx)
@@ -331,7 +341,7 @@ if __name__ == '__main__':
             projected_points = camera_intrinsic @ (camera_transform[:3, :3] @ xyzsg + camera_transform[:3, 3:])
             projected_points = projected_points[:2, :] / projected_points[2, :]
 
-            projection_errors = np.linalg.norm(projected_points - ref_projected_points, axis=0)
+            projection_errors = np.linalg.norm(np.linalg.inv(camera_intrinsic[:2, :2]) @ (projected_points - ref_projected_points), axis=0)
 
             inlier_mask = ((ref_projected_points[0, :] > -0.5) & (ref_projected_points[0, :] < w - 0.5)
                            & (ref_projected_points[1, :] > -0.5) & (ref_projected_points[1, :] < h - 0.5)
@@ -346,7 +356,7 @@ if __name__ == '__main__':
 
     symmetric_interframe_projection_errors = np.stack([interframe_projection_errors, interframe_projection_errors.T])
     symmetric_interframe_projection_errors[:, np.all(~np.isfinite(symmetric_interframe_projection_errors), axis=0)] = 0
-    interframe_costs = 1 - cauchy(np.nanmean(symmetric_interframe_projection_errors, axis=0), 10)
+    interframe_costs = 1 - cauchy(np.nanmean(symmetric_interframe_projection_errors, axis=0), 0.03)
 
     plt.figure('Interframe costs', figsize=(16, 10))
     plt.clf()
@@ -360,15 +370,29 @@ if __name__ == '__main__':
 
     # %%
 
+    interframe_angles = []
+    for primary_frame_camera_extrinsic in synthetic_camera_extrinsics:
+        interframe_angles.append([])
+        for secondary_frame_camera_extrinsic in synthetic_camera_extrinsics:
+            camera_transform = secondary_frame_camera_extrinsic @ np.linalg.inv(primary_frame_camera_extrinsic)
+            rvec, _ = cv2.Rodrigues(camera_transform[:3, :3])
+            # Ignore rotation around the z-axis (in the primary frame of reference)
+            interframe_angles[-1].append(np.linalg.norm(rvec[:2]))
+    interframe_angles = np.array(interframe_angles)
+
+    # %%
+
     # Compute the projection errors between synthetic camera frames and their associated canvas meshes to serve as a dissimilarity
     # measure between them when selecting target frames for view synthesis
 
     # Cast rays from each reference frame's synthetic camera onto the canvas meshes of the reference frame and comparison frame.
     # Project the ray canvas intersection points onto the comparison frame's synthetic camera imaging plane.
     # Calculate the projection errors between the two sets of projected points.
+    # This serves as a measure of interframe structural dissimilarities between synthetic camera frame canvasses and is used
+    # as a dissimilarity distance and interframe support measure when selecting representative view synthesis target frames.
 
     interframe_canvas_projection_errors = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
-    interframe_canvas_projection_error_weights = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
+    interframe_canvas_projection_ious = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
     #frame_synth_projection_score_histograms = []
     #frame_synth_projection_score_data = []
     frame_synth_projection_score_images = []
@@ -387,11 +411,13 @@ if __name__ == '__main__':
         wj, hj = synthetic_image_size
         ws, hs = np.array(synthetic_image_size) // grid_step
         ref_xyzsg, _, xsg, ysg, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
+        #ref_xyzsg, _, xsg, ysg, model_depth_img, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
 
         projection_error_images = []
+        depth_imgs = []
         for frame_idx in range(len(key_frame_indices)):
 
-            xyzsg, _, _, _, _, _ = ray_cast_grid_points(frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
+            xyzsg, _, _, _, depth_img, _ = ray_cast_grid_points(frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
 
             camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
 
@@ -401,7 +427,7 @@ if __name__ == '__main__':
             projected_points = synthetic_camera_intrinsics[frame_idx] @ (camera_transform[:3, :3] @ xyzsg + camera_transform[:3, 3:])
             projected_points = projected_points[:2, :] / projected_points[2, :]
 
-            projection_errors = np.linalg.norm(projected_points - ref_projected_points, axis=0)
+            projection_errors = np.linalg.norm(np.linalg.inv(synthetic_camera_intrinsics[frame_idx][:2, :2]) @ (projected_points - ref_projected_points), axis=0)
 
             inlier_mask = ((ref_projected_points[0, :] > -0.5) & (ref_projected_points[0, :] < wj - 0.5)
                            & (ref_projected_points[1, :] > -0.5) & (ref_projected_points[1, :] < hj - 0.5)
@@ -410,12 +436,12 @@ if __name__ == '__main__':
             projection_errors[~inlier_mask] = np.nan
 
             if np.any(np.isfinite(projection_errors)):
-                interframe_canvas_projection_errors[ref_frame_idx, frame_idx] = np.sqrt(np.nanmean(np.power(projection_errors, 2)))
+                interframe_canvas_projection_errors[ref_frame_idx, frame_idx] = np.sqrt(np.nanmean(np.power(np.clip(projection_errors, 0, 0.5), 2)))
             else:
-                interframe_canvas_projection_errors[ref_frame_idx, frame_idx] = max(hj, wj)
+                interframe_canvas_projection_errors[ref_frame_idx, frame_idx] = 1.0
 
-            interframe_canvas_projection_error_weights[ref_frame_idx, frame_idx] = (np.sum(np.isfinite(projected_points) & np.isfinite(ref_projected_points))
-                                                                                    / np.sum(np.isfinite(projected_points) | np.isfinite(ref_projected_points)))
+            interframe_canvas_projection_ious[ref_frame_idx, frame_idx] = (np.sum(np.isfinite(projected_points) & np.isfinite(ref_projected_points))
+                                                                           / np.sum(np.isfinite(projected_points) | np.isfinite(ref_projected_points)))
 
             camera_transform = camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
 
@@ -445,7 +471,7 @@ if __name__ == '__main__':
             #inlier_scores[~cross_flow_inlier] = 0
             inlier_scores[~cross_flow_inlier] = np.nan
 
-            flow_discrepancy_score = cauchy(np.linalg.norm(secondary_mesh_cross_flow - primary_mesh_cross_flow, axis=-1), 10)
+            flow_discrepancy_score = cauchy(np.linalg.norm(np.linalg.inv(camera_intrinsic[:2, :2]) @ (secondary_mesh_cross_flow - primary_mesh_cross_flow)[:, :, :, None], axis=(-2, -1)), 0.015)
 
             flow_gradient_x = np.gradient(primary_mesh_cross_flow, grid_step, edge_order=2, axis=1)
             flow_gradient_y = np.gradient(primary_mesh_cross_flow, grid_step, edge_order=2, axis=0)
@@ -459,8 +485,11 @@ if __name__ == '__main__':
             # relevant providing we only consider the magnitude of the offset from np.pi / 2
             assert ~np.any(np.abs(flow_grid_gradient_cross) > (1 + 1e-6) * np.linalg.norm(flow_gradient_x, axis=-1) * np.linalg.norm(flow_gradient_y, axis=-1))
             flow_grid_orthogonality_score = cauchy(np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1)),
-                                                   #np.pi / 2 * cauchy(interframe_angles[primary_frame_idx, secondary_frame_idx], np.pi / 4))
+                                                   #np.pi / 2 * cauchy(interframe_angles[ref_frame_idx, frame_idx], np.pi / 4))
+                                                   #np.pi / 3)
                                                    np.pi / 4)
+            #flow_grid_orthogonality_angle = np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1))
+            #flow_grid_orthogonality_score = 0.5 * (1 - scipy.special.erf((flow_grid_orthogonality_angle - np.pi / 6) / (np.pi / 6 / 1.5)))
 
             flow_laplacian_x = np.gradient(flow_gradient_x, grid_step, edge_order=2, axis=1)
             flow_laplacian_x_transverse_normed = np.abs(np.sum(np.stack([-flow_laplacian_x[:, :, 1], flow_laplacian_x[:, :, 0]], axis=-1) * flow_gradient_x, axis=-1)) / np.sum(np.power(flow_gradient_x, 2), axis=-1)
@@ -468,7 +497,7 @@ if __name__ == '__main__':
             flow_laplacian_y_transverse_normed = np.abs(np.sum(np.stack([-flow_laplacian_y[:, :, 0], flow_laplacian_y[:, :, 1]], axis=-1) * flow_gradient_y, axis=-1)) / np.sum(np.power(flow_gradient_y, 2), axis=-1)
             flow_laplacian_score = cauchy(np.linalg.norm(np.stack([flow_laplacian_x_transverse_normed, flow_laplacian_y_transverse_normed]), axis=0), 0.1)
 
-            if True:
+            if False:
                 mapping_score = (inlier_scores
                                  * flow_discrepancy_score
                                  * flow_grid_scaling_aspect_score
@@ -491,15 +520,85 @@ if __name__ == '__main__':
                                               + 1 / np.maximum(cauchy(key_frame_motion_blurs[frame_idx], 8.0), 1e-8)), 2)
 
             projection_error_images.append(mapping_score)
+            depth_imgs.append(depth_img)
 
         projection_error_images = np.array(projection_error_images)
 
         valid_mask = np.any(np.isfinite(projection_error_images), axis=0)
-        #frame_synth_projection_score_image = cauchy(np.min(np.nan_to_num(projection_error_images, nan=max(w, h)), axis=0), 10)
         frame_synth_projection_score_image = np.max(np.nan_to_num(projection_error_images, nan=0), axis=0)
         frame_synth_projection_score_image[~valid_mask] = np.nan
 
         frame_synth_projection_score_images.append(frame_synth_projection_score_image)
+
+        frame_synth_projection_frame_idxs = np.argmax(np.nan_to_num(projection_error_images, nan=0), axis=0)
+        frame_synth_projection_frame_idxs[~valid_mask] = ref_frame_idx
+
+        projection_frame_v_interfaces = np.vstack(np.where((frame_synth_projection_frame_idxs[:, 1:] != frame_synth_projection_frame_idxs[:, :-1])
+                                                           & valid_mask[:, 1:] & valid_mask[:, :-1]))
+        projection_frame_h_interfaces = np.vstack(np.where((frame_synth_projection_frame_idxs[1:, :] != frame_synth_projection_frame_idxs[:-1, :])
+                                                           & valid_mask[1:, :] & valid_mask[:-1, :]))
+
+        projection_frame_v_interface_depths = []
+        projection_frame_h_interface_depths = []
+        for depth_img in depth_imgs:
+            interp = scipy.interpolate.RegularGridInterpolator((np.arange(depth_img.shape[0]), np.arange(depth_img.shape[1])),
+                                                               depth_img,
+                                                               method='linear', bounds_error=True)
+            projection_frame_v_interface_depths.append(interp((projection_frame_v_interfaces[0, :], projection_frame_v_interfaces[1, :] + 0.5)))
+            projection_frame_h_interface_depths.append(interp((projection_frame_h_interfaces[0, :] + 0.5, projection_frame_h_interfaces[1, :])))
+        projection_frame_v_interface_depths = np.array(projection_frame_v_interface_depths)
+        projection_frame_h_interface_depths = np.array(projection_frame_h_interface_depths)
+
+        v_interface_projection_errors = []
+        for (v, u), point_depths in zip(projection_frame_v_interfaces.T, projection_frame_v_interface_depths.T):
+            xy = np.linalg.inv(camera_intrinsic_stepped) @ np.array([u, v, 1])[:, None]
+            left_frame_idx = frame_synth_projection_frame_idxs[v, u]
+            right_frame_idx = frame_synth_projection_frame_idxs[v, u + 1]
+            xys = xy * point_depths[[left_frame_idx, right_frame_idx]]
+
+            projection_errors = []
+            for frame_idx in [left_frame_idx, right_frame_idx]:
+                camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
+
+                projected_points = synthetic_camera_intrinsics[frame_idx] @ (camera_transform[:3, :3] @ xys + camera_transform[:3, 3:])
+                projected_points = projected_points[:2, :] / projected_points[2, :]
+
+                projection_errors.append(np.linalg.norm(np.diff(np.linalg.inv(synthetic_camera_intrinsics[frame_idx][:2, :2]) @ projected_points, axis=1)))
+
+            v_interface_projection_errors.append(projection_errors)
+        v_interface_projection_errors = np.max(v_interface_projection_errors, axis=1)
+
+        h_interface_projection_errors = []
+        for (v, u), point_depths in zip(projection_frame_h_interfaces.T, projection_frame_h_interface_depths.T):
+            xy = np.linalg.inv(camera_intrinsic_stepped) @ np.array([u, v, 1])[:, None]
+            up_frame_idx = frame_synth_projection_frame_idxs[v, u]
+            down_frame_idx = frame_synth_projection_frame_idxs[v + 1, u]
+            xys = xy * point_depths[[up_frame_idx, down_frame_idx]]
+
+            projection_errors = []
+            for frame_idx in [up_frame_idx, down_frame_idx]:
+                camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
+
+                projected_points = synthetic_camera_intrinsics[frame_idx] @ (camera_transform[:3, :3] @ xys + camera_transform[:3, 3:])
+                projected_points = projected_points[:2, :] / projected_points[2, :]
+
+                projection_errors.append(np.linalg.norm(np.diff(np.linalg.inv(synthetic_camera_intrinsics[frame_idx][:2, :2]) @ projected_points, axis=1)))
+
+            h_interface_projection_errors.append(projection_errors)
+        h_interface_projection_errors = np.max(h_interface_projection_errors, axis=1)
+
+        if False:
+            frame_synth_projection_score_image[projection_frame_v_interfaces[0, :], projection_frame_v_interfaces[1, :]] *= cauchy(v_interface_projection_errors, 0.02)
+            frame_synth_projection_score_image[projection_frame_v_interfaces[0, :], projection_frame_v_interfaces[1, :] + 1] *= cauchy(v_interface_projection_errors, 0.02)
+            frame_synth_projection_score_image[projection_frame_h_interfaces[0, :], projection_frame_h_interfaces[1, :]] *= cauchy(h_interface_projection_errors, 0.02)
+            frame_synth_projection_score_image[projection_frame_h_interfaces[0, :] + 1, projection_frame_h_interfaces[1, :]] *= cauchy(h_interface_projection_errors, 0.02)
+
+        """
+        v_interface_projection_costs = (1 - cauchy(v_interface_projection_errors, 0.02)) * (frame_synth_projection_score_image[projection_frame_v_interfaces[0, :], projection_frame_v_interfaces[1, :]] *
+                                                                                            frame_synth_projection_score_image[projection_frame_v_interfaces[0, :], projection_frame_v_interfaces[1, :] + 1])
+        h_interface_projection_costs = (1 - cauchy(h_interface_projection_errors, 0.02)) * (frame_synth_projection_score_image[projection_frame_h_interfaces[0, :], projection_frame_h_interfaces[1, :]] *
+                                                                                            frame_synth_projection_score_image[projection_frame_h_interfaces[0, :] + 1, projection_frame_h_interfaces[1, :]])
+        """
 
         """
         ref_xyzs_grid = ref_xyzsg.T.reshape((hs, ws, 3))
@@ -508,6 +607,15 @@ if __name__ == '__main__':
         """
 
         synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[ref_frame_idx]
+
+        """
+        # TODO: Consider weighting frame_synth_projection_score_image by Laplacian magnitude in model integrated depth image
+        # correlating with large high to low dips in frame_synth_projection_score_image
+        dx = cv2.Scharr(model_depth_img, ddepth=cv2.CV_32F, dx=1, dy=0, borderType=cv2.BORDER_REPLICATE)
+        dy = cv2.Scharr(model_depth_img, ddepth=cv2.CV_32F, dx=0, dy=1, borderType=cv2.BORDER_REPLICATE)
+        depth_gradient_img = cv2.magnitude(dx, dy)
+        depth_laplacian_img = np.abs(cv2.Laplacian(model_depth_img, ddepth=cv2.CV_32F, ksize=3, borderType=cv2.BORDER_REPLICATE))
+        """
 
         """
         mask = cv2.resize(np.isfinite(depth_img).astype(np.float32), dsize=(ws, hs), fx=0, fy=0, interpolation=cv2.INTER_LINEAR) >= 0.5
@@ -525,34 +633,75 @@ if __name__ == '__main__':
                                                   np.nansum(ref_xyzs_grid_surface_areas)))
         """
 
+        model_mapping_scores_cmap = get_frame_idxs_cmap(frame_synth_projection_frame_idxs, N=projection_error_images.shape[0])
+
         plt.figure('Interframe synthetic camera projection errors', figsize=(16, 10))
         setup_new_fig_page()
         plt.suptitle(f'ref_frame_idx: {ref_frame_idx}')
-        ax = plt.subplot(2, 2, 1)
+        ax = plt.subplot(2, 3, 1)
         xys_extent = (-0.5, ws - 0.5, hs - 0.5, -0.5)
         # Apply np.require() as a workaround for ValueError: arrays must be of dtype byte, short, float32 or float64
         # https://github.com/matplotlib/matplotlib/issues/28448
         plt.imshow(np.require(color_img, dtype=np.float32) / 255, extent=xys_extent)
         plt.title('integrated colour image')
-        ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
+        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
         plt.imshow(depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30, extent=xys_extent)
         plt.title('integrated depth')
-        ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+        ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
         plt.imshow(frame_synth_projection_score_image, cmap='jet', vmin=0, vmax=1)
         plt.title('frame_synth_projection_score_image')
+        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+        plt.imshow(frame_synth_projection_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores_cmap.N-1,
+                   interpolation_stage='rgba')
+        plt.title('frame_synth_projection_frame_idxs')
+        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+        plt.scatter(projection_frame_v_interfaces[1, :] + 0.5, projection_frame_v_interfaces[0, :],
+                    s=1e3*v_interface_projection_errors)
+        plt.scatter(projection_frame_h_interfaces[1, :], projection_frame_h_interfaces[0, :] + 0.5,
+                    s=1e3*h_interface_projection_errors)
+        ax.set_aspect('equal')
+        plt.title('interface_projection_errors')
         """
-        plt.subplot(2, 2, 4)
+        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+        plt.imshow(depth_laplacian_img, cmap='jet', extent=xys_extent)
+        plt.title('depth_laplacian_img')
+        """
+        """
+        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+        plt.imshow(depth_gradient_img, cmap='jet', extent=xys_extent)
+        plt.title('depth_gradient_img')
+        """
+        """
+        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+        plt.scatter(projection_frame_v_interfaces[1, :] + 0.5, projection_frame_v_interfaces[0, :],
+                    s=100*v_interface_projection_costs)
+        plt.scatter(projection_frame_h_interfaces[1, :], projection_frame_h_interfaces[0, :] + 0.5,
+                    s=100*h_interface_projection_costs)
+        ax.set_aspect('equal')
+        plt.title('interface_projection_costs')
+        """
+        """
+        plt.subplot(2, 3, 6)
         plt.bar(bin_edges[:-1], hist / np.sum(hist), width=np.diff(bin_edges), align='edge')
         plt.ylim((0, 1))
         plt.title('frame_synth_projection_score_image histogram')
         """
         """
-        ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
+        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
         plt.imshow(ref_xyzs_grid_surface_areas, cmap='jet')
         plt.title('ref_xyzs_grid_surface_areas')
         """
         plt.tight_layout()
         stash_fig_page()
+
+    # Weighting for the projection errors based on the IOU of projected canvas regions
+    interframe_canvas_projection_error_weights = np.power(interframe_canvas_projection_ious, 2)
+
+    # interframe_canvas_projection_error_scale acts as an indirect/pseudo measure of the complexity of the canvas surface based on
+    # an estimate of the mean rate of change of projection errors vs projection error weights (squared IOU of projected canvas regions)
+    masked_weighting = interframe_canvas_projection_error_weights * (1 - np.identity(len(np.diag(interframe_canvas_projection_error_weights))))
+    interframe_canvas_projection_error_scale = np.sum(interframe_canvas_projection_errors * masked_weighting) / np.sum(masked_weighting)
+    print('interframe_canvas_projection_error_scale', interframe_canvas_projection_error_scale)
 
     """
     frame_synth_projection_score_data = np.array(frame_synth_projection_score_data)
@@ -586,72 +735,414 @@ if __name__ == '__main__':
                                                         / np.diff(frame_synth_projection_score_bounds) * 3) + 1) / 2
     """
 
-    interframe_synth_projection_relative_scores = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
-    for ref_frame_idx in range(len(key_frame_indices)):
-        print('Calculating interframe synthetic camera projection relative scores ref_frame_idx', ref_frame_idx)
+    # %%
 
-        synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
+    # Calculate interframe synthesis mapping scores - the relative scores between frames predicting the quality of the view synthesis output
 
-        grid_step = 15
-        camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+    if True:
+        interframe_synth_projection_relative_scores = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
+        for ref_frame_idx in range(len(key_frame_indices)):
+            print('Calculating interframe synthetic camera projection relative scores ref_frame_idx', ref_frame_idx)
 
-        assert np.all(np.array(synthetic_image_size) % grid_step == 0)
-        wj, hj = synthetic_image_size
-        ws, hs = np.array(synthetic_image_size) // grid_step
-        ref_xyzsg, _, _, _, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
+            synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
 
-        for frame_idx in range(len(key_frame_indices)):
-
-            camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
-
-            synthetic_camera_intrinsic = synthetic_camera_intrinsics[frame_idx]
+            grid_step = 15
             camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
 
-            ref_projected_points = camera_intrinsic_stepped @ (camera_transform[:3, :3] @ ref_xyzsg + camera_transform[:3, 3:])
+            assert np.all(np.array(synthetic_image_size) % grid_step == 0)
+            wj, hj = synthetic_image_size
+            ws, hs = np.array(synthetic_image_size) // grid_step
+            ref_xyzsg, _, _, _, _, _ = ray_cast_grid_points(ref_frame_idx, synthetic_camera_extrinsics[ref_frame_idx], camera_intrinsic_stepped, ws, hs)
+
+            model_depth_img, model_depth_confidence = model_depth_images[ref_frame_idx]
+            assert np.all(np.isfinite(model_depth_confidence))
+            ref_depth_confidence = cv2.resize(model_depth_confidence, dsize=(ws, hs), fx=0, fy=0, interpolation=cv2.INTER_AREA)
+
+            for frame_idx in range(len(key_frame_indices)):
+
+                camera_transform = synthetic_camera_extrinsics[frame_idx] @ np.linalg.inv(synthetic_camera_extrinsics[ref_frame_idx])
+
+                synthetic_camera_intrinsic = synthetic_camera_intrinsics[frame_idx]
+                camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+
+                ref_projected_points = camera_intrinsic_stepped @ (camera_transform[:3, :3] @ ref_xyzsg + camera_transform[:3, 3:])
+                ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
+
+                primary_mesh_cross_flow = ref_projected_points.T.reshape((hs, ws, 2)).astype(np.float32)
+
+                projection_score_image_warp = cv2.remap(frame_synth_projection_score_images[frame_idx], primary_mesh_cross_flow, None, cv2.INTER_LINEAR,
+                                                        borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
+
+                projection_score_image_diff = projection_score_image_warp - frame_synth_projection_score_images[ref_frame_idx]
+                if np.any(np.isfinite(projection_score_image_diff)):
+                    # Apply greater weighting to e.g. ref 1.0 -> warp 0.5 than ref 0.5 -> warp 0.0
+                    reductions_mask = projection_score_image_diff < 0
+                    reductions = (projection_score_image_diff * frame_synth_projection_score_images[ref_frame_idx])[reductions_mask]
+                    # Apply greater weighting to e.g. ref 0.5 -> warp 1.0 than ref 0.0 -> warp 0.5
+                    increases_mask = projection_score_image_diff >= 0
+                    increases = (projection_score_image_diff * projection_score_image_warp)[increases_mask]
+                    relative_scores = np.hstack([reductions, increases])
+                    score_weights = np.hstack([ref_depth_confidence[reductions_mask], ref_depth_confidence[increases_mask]])
+                    if np.sum(score_weights) > 0:
+                        mean_relative_scores = np.sum(relative_scores * score_weights) / np.sum(score_weights)
+                        std_relative_scores = np.sum(np.power(relative_scores - mean_relative_scores, 2) * score_weights) / np.sum(score_weights)
+                        interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = mean_relative_scores / max(std_relative_scores, 1e-2)
+
+                """
+                plt.figure('Interframe synthetic projection relative scores', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'ref_frame_idx, frame_idx: {ref_frame_idx}, {frame_idx}')
+                ax = plt.subplot(2, 2, 1)
+                plt.imshow(frame_synth_projection_score_images[ref_frame_idx], cmap='jet', vmin=0, vmax=1)
+                ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
+                plt.imshow(frame_synth_projection_score_images[frame_idx], cmap='jet', vmin=0, vmax=1)
+                ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+                plt.imshow(projection_score_image_warp, cmap='jet', vmin=0, vmax=1)
+                ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
+                plt.imshow(projection_score_image_diff)
+                plt.tight_layout()
+                stash_fig_page()
+                """
+    else:
+        # Compare frame scores by sampling projected triangulated points
+
+        valid_mask = np.all(np.isfinite(model_triangulated_points[:3, :]), axis=0)
+        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, valid_mask].T))
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=64))
+        #pcd.orient_normals_to_align_with_direction(orientation_reference=np.array([0, 0, -1]))
+        # https://github.com/isl-org/Open3D/blob/v0.18.0/cpp/open3d/geometry/PointCloud.h
+        # Function to consistently orient estimated normals based on consistent tangent planes as described in Hoppe et al.,
+        # "Surface Reconstruction from Unorganized Points", 1992.
+        # Further details on parameters are described in Piazza, Valentini, Varetti, "Mesh Reconstruction from Point Cloud", 2023.
+        #  - k: k nearest neighbour for graph reconstruction for normal propagation.
+        #  - lambda: penalty constant on the distance of a point from the tangent plane
+        #  - cos_alpha_tol: threshold that defines the amplitude of the cone spanned by the reference normal
+        # pcd.orient_normals_consistent_tangent_plane tends to invert normals for points not fully aligned with the primary surface
+        #pcd.orient_normals_consistent_tangent_plane(**{'k': 30, 'lambda': 0.0, 'cos_alpha_tol': 1.0})
+        #if np.mean(np.array(pcd.normals)[:, 2]) > 0:
+        #    pcd.normals = o3d.utility.Vector3dVector(-np.array(pcd.normals))
+        pcd_points = np.array(pcd.points).T
+        pcd_normals = np.array(pcd.normals).T
+        normal_ray_alignment = np.zeros((np.sum(valid_mask),), dtype=np.float32)
+        for image_to_triangulated_point_idxs, camera_extrinsic in zip(key_frame_image_triangulated_point_idxs,
+                                                                      camera_extrinsics):
+            triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
+            triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
+            image_points_weights = np.zeros((model_triangulated_points.shape[1],), dtype=np.float32)
+            image_points_weights[triangulated_point_idxs] = 1
+
+            R = camera_extrinsic[:3, :3]
+            t = camera_extrinsic[:3, 3:]
+            object_points = R @ pcd_points + t
+            object_normals = R @ pcd_normals
+
+            object_point_ray = object_points / np.clip(np.linalg.norm(object_points, axis=0), 1e-6, np.inf)
+            normal_ray_alignment += np.sum(object_point_ray * object_normals, axis=0) * image_points_weights[valid_mask]
+        pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
+        assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
+
+        model_triangulated_normals = np.full((3, model_triangulated_points.shape[1]), fill_value=np.nan, dtype=np.float32)
+        model_triangulated_normals[:, valid_mask] = np.array(pcd.normals).T
+
+        frame_synth_projection_score_samples = []
+        for ref_frame_idx in range(len(key_frame_indices)):
+            synthetic_camera_extrinsic = synthetic_camera_extrinsics[ref_frame_idx]
+            synthetic_camera_intrinsic = synthetic_camera_intrinsics[ref_frame_idx]
+
+            grid_step = 15
+            camera_intrinsic_stepped = np.block([[synthetic_camera_intrinsic[:2, :2] / grid_step, (synthetic_camera_intrinsic[:2, 2:] + 0.5) / grid_step - 0.5], [0, 0, 1]])
+
+            triangulated_points = synthetic_camera_extrinsic[:3, :3] @ model_triangulated_points[:3, :] + synthetic_camera_extrinsic[:3, 3:]
+            triangulated_normals = synthetic_camera_extrinsic[:3, :3] @ model_triangulated_normals
+            camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
+            ray_normal_angles = np.arccos(np.clip(np.sum(-triangulated_normals * camera_rays, axis=0), -1, 1))
+
+            triangulated_points[:, ray_normal_angles > np.pi / 2] = np.nan
+
+            ref_projected_points = camera_intrinsic_stepped @ triangulated_points
             ref_projected_points = ref_projected_points[:2, :] / ref_projected_points[2, :]
 
-            primary_mesh_cross_flow = ref_projected_points.T.reshape((hs, ws, 2)).astype(np.float32)
+            frame_synth_projection_score_image = frame_synth_projection_score_images[ref_frame_idx]
+            interp = scipy.interpolate.RegularGridInterpolator((np.arange(frame_synth_projection_score_image.shape[0]), np.arange(frame_synth_projection_score_image.shape[1])),
+                                                               frame_synth_projection_score_image,
+                                                               method='linear', bounds_error=False, fill_value=np.nan)
+            frame_synth_projection_score_samples.append(interp((ref_projected_points[1, :], ref_projected_points[0, :])))
 
-            projection_score_image_warp = cv2.remap(frame_synth_projection_score_images[frame_idx], primary_mesh_cross_flow, None, cv2.INTER_LINEAR,
-                                                    borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan)
+        interframe_synth_projection_relative_scores = np.zeros((len(key_frame_indices),) * 2, dtype=np.float32)
+        for ref_frame_idx in range(len(key_frame_indices)):
+            print('Calculating interframe synthetic camera projection relative scores ref_frame_idx', ref_frame_idx)
+            for frame_idx in range(len(key_frame_indices)):
+                #projection_score_diff = triangulated_idxs_weights * (frame_synth_projection_score_samples[frame_idx] - frame_synth_projection_score_samples[ref_frame_idx])
+                projection_score_diff = frame_synth_projection_score_samples[frame_idx] - frame_synth_projection_score_samples[ref_frame_idx]
+                if np.any(np.isfinite(projection_score_diff)):
+                    # Apply greater weighting to e.g. ref 1.0 -> warp 0.5 than ref 0.5 -> warp 0.0
+                    reductions = np.vstack([projection_score_diff * frame_synth_projection_score_samples[ref_frame_idx],
+                                            triangulated_idxs_weights])[:, projection_score_diff < 0]
+                    # Apply greater weighting to e.g. ref 0.5 -> warp 1.0 than ref 0.0 -> warp 0.5
+                    increases = np.vstack([projection_score_diff * frame_synth_projection_score_samples[frame_idx],
+                                           triangulated_idxs_weights])[:, projection_score_diff >= 0]
+                    relative_scores = np.hstack([reductions, increases])
+                    if relative_scores.shape[1] > 0:
+                        #interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = np.mean(relative_scores) / max(np.std(relative_scores), 1e-2)
+                        #interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = np.mean(relative_scores)
+                        #relative_scores /= np.sum(triangulated_idxs_weights[np.isfinite(projection_score_diff)])
+                        #interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = np.sum(relative_scores) / max(np.std(relative_scores), 1e-2)
+                        relative_scores_mean = np.sum(relative_scores[0, :] * relative_scores[1, :]) / np.sum(relative_scores[1, :])
+                        relative_scores_var = np.sum(np.power(relative_scores[0, :] - relative_scores_mean, 2) * relative_scores[1, :]) / np.sum(relative_scores[1, :])
+                        interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = relative_scores_mean / max(np.sqrt(relative_scores_var), 1e-2)
 
-            projection_score_image_diff = projection_score_image_warp - frame_synth_projection_score_images[ref_frame_idx]
-            if np.any(np.isfinite(projection_score_image_diff)):
-                # Apply greater weighting to e.g. ref 1.0 -> warp 0.5 than ref 0.5 -> warp 0.0
-                reductions = (projection_score_image_diff * frame_synth_projection_score_images[ref_frame_idx])[projection_score_image_diff < 0]
-                # Apply greater weighting to e.g. ref 0.5 -> warp 1.0 than ref 0.0 -> warp 0.5
-                increases = (projection_score_image_diff * projection_score_image_warp)[projection_score_image_diff >= 0]
-                relative_scores = np.hstack([reductions, increases])
-                if len(relative_scores) > 0:
-                    interframe_synth_projection_relative_scores[ref_frame_idx, frame_idx] = np.mean(relative_scores) / max(np.std(relative_scores), 1e-2)
+    # %%
 
-            """
-            plt.figure('Interframe synthetic projection relative scores', figsize=(16, 10))
+    '''
+    mesh_frame_dissimilarity_threshold = 0.3
+    mesh_frame_dissimilarity_boundary = 2 * mesh_frame_dissimilarity_threshold
+
+    interframe_dissimilarities = 1 - cauchy(0.5 * (interframe_canvas_projection_errors + interframe_canvas_projection_errors.T),
+                                            3 * interframe_canvas_projection_error_scale)
+    interframe_dissimilarity_weights = 0.5 * (interframe_canvas_projection_error_weights + interframe_canvas_projection_error_weights.T)
+
+    embedding_frame_idxs = np.where(np.sum(interframe_dissimilarity_weights, axis=0) > 1)[0]
+    embedding_dissimilarities = interframe_dissimilarities[embedding_frame_idxs[:, None], embedding_frame_idxs]
+    embedding_weights = interframe_dissimilarity_weights[embedding_frame_idxs[:, None], embedding_frame_idxs]
+
+    non_diag_mask = ~np.identity(len(embedding_frame_idxs), dtype=bool)
+    if np.mean(embedding_dissimilarities) < 1e-8:
+        embedding_dissimilarities[non_diag_mask] = 1e-8
+    if np.mean(embedding_weights[non_diag_mask]) < 1e-8:
+        embedding_weights[non_diag_mask] = 1e-8
+
+    # Higher n_components should converge to an embedding that fits dissimilarities with lower residual errors / stress,
+    # but may not generalise well to missing dissimilarities?
+    # Also the variance of distances (such as Euclidean or Manhattan) between points converges to zero as the number of
+    # dimensions increases https://towardsdatascience.com/curse-of-dimensionality-an-intuitive-exploration-1fbf155e1411/
+    for n_components in [2, 3, 6]:
+        embedding, stress, n_iter = rsatoolbox.util.vis_utils.smacof(embedding_dissimilarities, metric=True, n_components=n_components, n_init=8, n_jobs=-1,
+                                                                     max_iter=300, random_state=0, return_n_iter=True, weight=embedding_weights)
+
+        embedding_costs = np.full((len(key_frame_indices), len(key_frame_indices)), fill_value=np.nan, dtype=np.float32)
+        embedding_costs[embedding_frame_idxs[:, None], embedding_frame_idxs] = sklearn.metrics.euclidean_distances(embedding)
+
+        embedding_cost_values = embedding_costs[~np.identity(embedding_costs.shape[0], dtype=bool)]
+        embedding_cost_values = embedding_cost_values[np.isfinite(embedding_cost_values)]
+
+        gm = sklearn.mixture.GaussianMixture(n_components=2, covariance_type='diag', random_state=0)
+        gm.fit(embedding_cost_values[:, None])
+        component_idxs = np.argsort(gm.means_[:, 0])
+
+        # Locate the intersection point between the two Gaussian Mixture component means (if it exists).
+        # There may be no such intersection point if the distribution is fundamentally unimodal - this
+        # commonly arises when the number of key frames is small.
+        # https://stackoverflow.com/questions/22579434/python-finding-the-intersection-point-of-two-gaussian-curves
+        a = 1 / (2 * gm.covariances_[component_idxs[0], 0]) - 1 / (2 * gm.covariances_[component_idxs[1], 0])
+        b = (gm.means_[component_idxs[1], 0] / gm.covariances_[component_idxs[1], 0]
+             - gm.means_[component_idxs[0], 0] / gm.covariances_[component_idxs[0], 0])
+        c = (np.power(gm.means_[component_idxs[0], 0], 2) / (2 * gm.covariances_[component_idxs[0], 0])
+             - np.power(gm.means_[component_idxs[1], 0], 2) / (2 * gm.covariances_[component_idxs[1], 0])
+             - np.log(gm.covariances_[component_idxs[1], 0] / gm.covariances_[component_idxs[0], 0]) / 2
+             - np.log(gm.weights_[component_idxs[0]] / gm.weights_[component_idxs[1]]))
+        gm_intersections = np.roots([a, b, c])
+        inter_idxs = np.where((gm.means_[component_idxs[0], 0] < gm_intersections) & (gm_intersections < gm.means_[component_idxs[1], 0]))[0]
+        gm_component_intersection = gm_intersections[inter_idxs[0]] if len(inter_idxs) == 1 else np.nan
+
+        print('GMM n_components, stress, n_iter, gm_component_intersection',
+              n_components, stress, n_iter, gm_component_intersection)
+
+        print('outlier component P(X = mesh_frame_dissimilarity_threshold)',
+              gm.weights_[component_idxs[1]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_threshold,
+                                                                    loc=gm.means_[component_idxs[1], 0],
+                                                                    scale=np.sqrt(gm.covariances_[component_idxs[1], 0])))
+        print('outlier component P(X < mesh_frame_dissimilarity_threshold)',
+              gm.weights_[component_idxs[1]] * scipy.stats.norm.cdf(mesh_frame_dissimilarity_threshold,
+                                                                    loc=gm.means_[component_idxs[1], 0],
+                                                                    scale=np.sqrt(gm.covariances_[component_idxs[1], 0])))
+        print('outlier component P(X < mesh_frame_dissimilarity_threshold | outlier)',
+              scipy.stats.norm.cdf(mesh_frame_dissimilarity_threshold,
+                                   loc=gm.means_[component_idxs[1], 0],
+                                   scale=np.sqrt(gm.covariances_[component_idxs[1], 0])))
+        print('inlier component P(X = mesh_frame_dissimilarity_boundary)',
+              gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_boundary,
+                                                                    loc=gm.means_[component_idxs[0], 0],
+                                                                    scale=np.sqrt(gm.covariances_[component_idxs[0], 0])))
+        print('inlier component P(X > mesh_frame_dissimilarity_boundary)',
+              gm.weights_[component_idxs[0]] * (1 - scipy.stats.norm.cdf(mesh_frame_dissimilarity_boundary,
+                                                                         loc=gm.means_[component_idxs[0], 0],
+                                                                         scale=np.sqrt(gm.covariances_[component_idxs[0], 0]))))
+        print('inlier component P(X > mesh_frame_dissimilarity_boundary | inlier)',
+              1 - scipy.stats.norm.cdf(mesh_frame_dissimilarity_boundary,
+                                       loc=gm.means_[component_idxs[0], 0],
+                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])))
+
+        # Clustering principally based on embedding location and dissimilarity distance, but
+        # also influenced by density / coupling
+        if False:
+            #distance_threshold = gm_component_intersection
+            distance_threshold = 1.5 * mesh_frame_dissimilarity_threshold
+            #distance_threshold = mesh_frame_dissimilarity_boundary
+            clustering = sklearn.cluster.AgglomerativeClustering(n_clusters=None, linkage='complete',
+                                                                 distance_threshold=distance_threshold)
+            clustering.fit(embedding)
+            embedding_cluster_count = clustering.n_clusters_
+        elif True:
+            #bandwidth = sklearn.cluster.estimate_bandwidth(embedding, quantile=0.3, n_samples=500)
+            bandwidth = 0.75 * mesh_frame_dissimilarity_threshold
+            clustering = sklearn.cluster.MeanShift(bandwidth=bandwidth, bin_seeding=True)
+            clustering.fit(embedding)
+            embedding_cluster_count = len(set(clustering.labels_))
+        else:
+            preference = -10 * np.power(mesh_frame_dissimilarity_threshold, 2)
+            clustering = sklearn.cluster.AffinityPropagation(preference=preference, random_state=0)
+            clustering.fit(embedding)
+            embedding_cluster_count = len(set(clustering.labels_))
+
+        embedding_cluster_labels = np.full((len(key_frame_indices),), fill_value=-1, dtype=np.int32)
+        embedding_cluster_labels[embedding_frame_idxs] = clustering.labels_
+
+        print('embedding_cluster_count', embedding_cluster_count)
+
+        """
+        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+        if n_components == 2:
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
             setup_new_fig_page()
-            plt.suptitle(f'ref_frame_idx, frame_idx: {ref_frame_idx}, {frame_idx}')
-            ax = plt.subplot(2, 2, 1)
-            plt.imshow(frame_synth_projection_score_images[ref_frame_idx], cmap='jet', vmin=0, vmax=1)
-            ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
-            plt.imshow(frame_synth_projection_score_images[frame_idx], cmap='jet', vmin=0, vmax=1)
-            ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
-            plt.imshow(projection_score_image_warp, cmap='jet', vmin=0, vmax=1)
-            ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
-            plt.imshow(projection_score_image_diff)
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(1, 1, 1)
+            plt.plot(*embedding.T, alpha=0.5)
+            for cluster_idx, colour, marker in zip(range(embedding_cluster_count), colour_sequence, marker_sequence):
+                plt.scatter(*embedding[clustering.labels_ == cluster_idx].T, s=200, color=colour, marker=marker, alpha=0.5)
+            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                plt.text(*xy, f'{frame_idx}')
+            ax.set_aspect('equal', adjustable='datalim')
             plt.tight_layout()
             stash_fig_page()
-            """
+        elif n_components >= 3:
+            if n_components > 3:
+                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                mds.fit(embedding)
+                embedding_3d = mds.embedding_
+            else:
+                embedding_3d = embedding
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax3 = plt.subplot(1, 1, 1, projection='3d')
+            ax3.plot(*embedding_3d.T, alpha=0.5)
+            for cluster_idx, colour, marker in zip(range(embedding_cluster_count), colour_sequence, marker_sequence):
+                ax3.scatter(*embedding_3d[clustering.labels_ == cluster_idx].T, s=200, color=colour, marker=marker, alpha=0.5)
+            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                ax3.text(*xyz, f'{frame_idx}')
+            ax3.set_aspect('equal', adjustable='datalim')
+            ax3.set_xlabel('X')
+            ax3.set_ylabel('Y')
+            ax3.set_zlabel('Z')
+            plt.tight_layout()
+            stash_fig_page()
+        """
+
+        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+        if n_components == 2:
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(1, 1, 1)
+            plt.plot(*embedding.T, alpha=0.5)
+            marker_sizes = np.maximum(np.nanmean(frame_synth_projection_score_images, axis=(-2, -1))[embedding_frame_idxs], 0) * 180 + 20
+            for cluster_idx, colour, marker in zip(range(embedding_cluster_count), colour_sequence, marker_sequence):
+                cluster_mask = embedding_cluster_labels == cluster_idx
+                plt.scatter(*embedding[cluster_mask, :].T,
+                            s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5)
+            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                plt.text(*xy, f'{frame_idx}')
+            ax.set_aspect('equal', adjustable='datalim')
+            plt.legend()
+            plt.tight_layout()
+            stash_fig_page()
+        elif n_components >= 3:
+            if n_components > 3:
+                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                mds.fit(embedding)
+                embedding_3d = mds.embedding_
+            else:
+                embedding_3d = embedding
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax3 = plt.subplot(1, 1, 1, projection='3d')
+            ax3.plot(*embedding_3d.T, alpha=0.5)
+            marker_sizes = np.maximum(np.nanmean(frame_synth_projection_score_images, axis=(-2, -1))[embedding_frame_idxs], 0) * 180 + 20
+            for cluster_idx, colour, marker in zip(range(embedding_cluster_count), colour_sequence, marker_sequence):
+                cluster_mask = embedding_cluster_labels == cluster_idx
+                ax3.scatter(*embedding_3d[cluster_mask, :].T,
+                            s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5)
+            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                ax3.text(*xyz, f'{frame_idx}')
+            ax3.set_aspect('equal', adjustable='datalim')
+            ax3.set_xlabel('X')
+            ax3.set_ylabel('Y')
+            ax3.set_zlabel('Z')
+            plt.legend()
+            plt.tight_layout()
+            stash_fig_page()
+
+        plt.figure('Embedding costs', figsize=(16, 10))
+        setup_new_fig_page()
+        plt.suptitle(f'n_components: {n_components}')
+        ax = plt.subplot(2, 3, 1)
+        plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
+        plt.title('interframe_dissimilarities')
+        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+        plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
+        plt.title('interframe_dissimilarity_weights')
+        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+        plt.imshow(embedding_costs, cmap='jet', interpolation='none')
+        plt.title('embedding_costs')
+        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+        plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
+        plt.title('embedding_costs / interframe_dissimilarities')
+        plt.subplot(2, 3, 6)
+        bins = np.linspace(0, 1, 51)
+        plt.hist(embedding_cost_values, bins=bins, density=True)
+        for component_idx in np.argsort(gm.means_[:, 0]):
+            plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
+                                                                             scale=np.sqrt(gm.covariances_[component_idx, 0])))
+        plt.axvline(mesh_frame_dissimilarity_threshold, color='black', linestyle='--')
+        plt.axvline(mesh_frame_dissimilarity_boundary, color='red', linestyle='--')
+        plt.axvline(gm_component_intersection, color='blue', linestyle='--')
+        plt.plot(mesh_frame_dissimilarity_threshold,
+                 gm.weights_[component_idxs[1]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_threshold,
+                                                                       loc=gm.means_[component_idxs[1], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[1], 0])),
+                 'ko')
+        plt.plot(mesh_frame_dissimilarity_boundary,
+                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_boundary,
+                                                                       loc=gm.means_[component_idxs[0], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                 'ro')
+        plt.plot(gm_component_intersection,
+                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
+                                                                       loc=gm.means_[component_idxs[0], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                 'bo')
+        plt.title('embedding_cost_values')
+        plt.tight_layout()
+        stash_fig_page()
+    '''
 
     # %%
 
     # Optimise a 1D array representing frame synthesis projection scores: model_frame_synth_projection_scores
     # from the 2D interframe synthesis projection relative scores: interframe_synth_projection_relative_scores
 
-    frame_synth_projection_score_image_means = [np.nanmean(frame_synth_projection_score_image)
-                                                for frame_synth_projection_score_image in frame_synth_projection_score_images]
+    frame_synth_projection_score_image_means = np.nanmean(frame_synth_projection_score_images, axis=(-2, -1))
 
-    # Interframe support is the product of low interframe_canvas_projection_errors (RMS of projection errors between frame canvasses)
-    # and high interframe_canvas_projection_error_weights (IOU of projected canvas regions)
-    interframe_support = cauchy(interframe_canvas_projection_errors, 20) * interframe_canvas_projection_error_weights
+    # Interframe support is the product of low RMS of projection errors between frame canvasses (interframe_canvas_projection_errors)
+    # and low interframe angle (interframe_angles)
+    interframe_support = cauchy(interframe_canvas_projection_errors, 3 * max(interframe_canvas_projection_error_scale, 0.02)) * cauchy(interframe_angles, np.pi / 3)
+    #interframe_support = 0.5 * (1 - scipy.special.erf((interframe_canvas_projection_errors - 0.5 * interframe_canvas_projection_error_scale)
+    #                                                  / (0.5 * interframe_canvas_projection_error_scale / 1.5)))
+    #interframe_support = cauchy(interframe_canvas_projection_errors, 0.03) * interframe_canvas_projection_error_weights
+    #interframe_support = cauchy(embedding_costs, 0.25)
     model_interframe_support = torch.tensor(interframe_support, dtype=torch.float32)
     model_interframe_synth_projection_relative_scores = torch.tensor(interframe_synth_projection_relative_scores, dtype=torch.float32)
     model_interframe_synth_projection_relative_score_scaling = torch.tensor(1, dtype=torch.float32, requires_grad=True)
@@ -660,13 +1151,23 @@ if __name__ == '__main__':
     def loss_fn():
         loss_components = {}
 
+        # The conventional approach would be to calculate 2D interframe predicted relative scores, given the 1D model frame scores:
+        #   predicted_Δscore(f1, f2) = model_frame_synth_projection_scores - model_frame_synth_projection_scores[:, None]
+        # and then compute the errors between predicted projection scores and model frame scores:
+        #   prediction_error(f1, f2) = predicted_Δscore(f1, f2) - model_interframe_synth_projection_relative_score_scaling * model_interframe_synth_projection_relative_scores
+        # model_interframe_synth_projection_relative_scores is unbounded, so a sigmoid function may be applied to map it to the range (-1, 1).
+        # Likewise another sigmoid function may be applied to model_frame_synth_projection_scores and model_frame_synth_projection_scores[:, None] to maintain
+        # their ranges to (0, 1) during optimisation.
+        # However, only two sigmoid functions need to be applied if prediction_error(f1, f2) is rewritten as:
+        #   prediction_error(f1, f2) = model_frame_synth_projection_scores - (model_frame_synth_projection_scores[:, None] + model_interframe_synth_projection_relative_score_scaling * model_interframe_synth_projection_relative_scores)
+
         # Calculate predicted_score(f2 | f1) = the 2D predicted projection scores for all frames, given the 1D model frame scores
         conditional_frame_synth_projection_score_predictions = model_frame_synth_projection_scores[:, None] + model_interframe_synth_projection_relative_score_scaling * model_interframe_synth_projection_relative_scores
         conditional_frame_synth_projection_score_predictions_sigmoid = torch.nn.functional.sigmoid(4 * (conditional_frame_synth_projection_score_predictions - 0.5))
         # Compute the errors between predicted projection scores and model frame scores
         # prediction_error(f1, f2) = predicted_score(f2 | f1) - model_score(f2)
         model_frame_synth_projection_scores_sigmoid = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_scores - 0.5))
-        model_frame_synth_projection_score_errors = model_frame_synth_projection_scores_sigmoid - conditional_frame_synth_projection_score_predictions_sigmoid
+        model_frame_synth_projection_score_errors = conditional_frame_synth_projection_score_predictions_sigmoid - model_frame_synth_projection_scores_sigmoid
 
         # Weight prediction_error(f1, f2) by the degree of interframe support
         loss_components['errors'] = model_interframe_support * torch.pow(model_frame_synth_projection_score_errors, 2)
@@ -732,35 +1233,43 @@ if __name__ == '__main__':
 
     plt.figure('Interframe canvas projection errors', figsize=(16, 10))
     plt.clf()
-    ax = plt.subplot(2, 2, 1)
+    ax = plt.subplot(2, 3, 1)
     plt.imshow(interframe_canvas_projection_errors)
     plt.title('interframe_canvas_projection_errors')
-    ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
+    ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+    plt.imshow(interframe_angles)
+    plt.title('interframe_angles')
+    ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
     plt.imshow(interframe_canvas_projection_error_weights)
     plt.title('interframe_canvas_projection_error_weights')
+    ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+    plt.imshow(interframe_support)
+    plt.title('interframe_support')
     """
-    ax = plt.subplot(2, 2, 3)
+    ax = plt.subplot(2, 3, 3)
     plt.plot(frame_synth_projection_scores)
     plt.title('frame_synth_projection_scores')
-    plt.subplot(2, 2, 4, sharex=ax)
+    plt.subplot(2, 3, 4, sharex=ax)
     plt.plot(frame_synth_projection_scores)
     plt.ylim((-0.05, 1.05))
     plt.title('frame_synth_projection_scores')
     """
-    ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+    ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
     vmaxabs = np.max(np.abs(interframe_synth_projection_relative_scores))
     plt.imshow(interframe_synth_projection_relative_scores, cmap='seismic', vmin=-vmaxabs, vmax=vmaxabs)
     plt.title('interframe_synth_projection_relative_scores')
-    plt.subplot(2, 2, 4)
-    plt.plot(frame_synth_projection_scores)
-    plt.plot(frame_synth_projection_score_image_means, ':')
-    plt.plot(np.sum(interframe_synth_projection_relative_scores * interframe_support, axis=0) / np.sum(interframe_support, axis=0), '-.')
+    plt.subplot(2, 3, 6)
+    plt.plot(frame_synth_projection_scores, label='frame synth projection scores')
+    plt.plot(frame_synth_projection_score_image_means, ':', label='frame synth projection score image means')
+    plt.plot(np.sum(interframe_synth_projection_relative_scores * interframe_support, axis=0) / np.sum(interframe_support, axis=0), '-.',
+             label='interframe support weighted mean of relative scores')
+    plt.legend()
     plt.title('frame_synth_projection_scores')
     plt.tight_layout()
 
     # %%
 
-    # Select target frames by optimising a regularised interframe support loss function
+    # Select target frames by optimising a regularised activation interframe support loss function
 
     model_interframe_support = torch.tensor(interframe_support, dtype=torch.float32)
     model_frame_synth_projection_scores = torch.tensor(frame_synth_projection_scores, dtype=torch.float32)
@@ -776,8 +1285,8 @@ if __name__ == '__main__':
         #target_frame_exclusions = torch.exp(-0.5 * torch.pow(target_frame_activations[:, None] * model_interframe_support / (threshold / 3), 2))
         #loss_components['exclusion'] = 1 / torch.mean(1 / target_frame_exclusions, dim=0)
         #loss_components['exclusion'] = torch.exp(-0.5 * torch.sum(torch.pow(target_frame_activations[:, None] * model_interframe_support / (threshold / 3), 2), dim=0))
-        #exp_factor = 99 * (1 - temperature) + 1
-        exp_factor = 100
+        exp_factor = 99 * (1 - temperature) + 1
+        #exp_factor = 100
         activated_frame_support = (torch.logsumexp(exp_factor * target_frame_activations[:, None] * model_interframe_support, dim=0) - np.log(target_frame_activations.shape[0])) / exp_factor
         #loss_components['exclusion'] = torch.exp(-0.5 * torch.pow(activated_frame_support / (threshold / 3), 2))
         loss_components['exclusion'] = torch.exp(-3.0 * activated_frame_support) * model_frame_synth_projection_scores
@@ -849,7 +1358,7 @@ if __name__ == '__main__':
 
     target_frame_activations = scipy.special.expit(model_target_frames.numpy(force=True))
 
-    target_frame_idxs = np.where(target_frame_activations >= min(0.25, np.max(target_frame_activations)))[0]
+    target_frame_idxs = np.where(target_frame_activations >= min(0.1, np.max(target_frame_activations)))[0]
     print('target_frame_idxs', target_frame_idxs)
 
     target_frame_support_cluster_labels = target_frame_idxs[np.argmax(interframe_support[target_frame_idxs, :], axis=0)]
@@ -878,9 +1387,10 @@ if __name__ == '__main__':
 
     # %%
 
-    # Visualise the selected target frames within some embedding spaces
+    # Visualise the selected target frames within a range of embedding spaces
 
-    interframe_dissimilarities = 1 - cauchy(0.5 * (interframe_canvas_projection_errors + interframe_canvas_projection_errors.T), 50)
+    interframe_dissimilarities = 1 - cauchy(0.5 * (interframe_canvas_projection_errors + interframe_canvas_projection_errors.T),
+                                            4 * max(interframe_canvas_projection_error_scale, 0.02))
     interframe_dissimilarity_weights = 0.5 * (interframe_canvas_projection_error_weights + interframe_canvas_projection_error_weights.T)
 
     embedding_frame_idxs = np.where(np.sum(interframe_dissimilarity_weights, axis=0) > 1)[0]
@@ -1009,6 +1519,253 @@ if __name__ == '__main__':
         plt.title('embedding_cost_values')
         plt.tight_layout()
         stash_fig_page()
+
+    # %%
+
+    '''
+    mesh_frame_dissimilarity_threshold = 0.3
+    mesh_frame_dissimilarity_boundary = 2 * mesh_frame_dissimilarity_threshold
+
+    interframe_dissimilarities = 1 - cauchy(0.5 * (interframe_canvas_projection_errors + interframe_canvas_projection_errors.T),
+                                            3 * interframe_canvas_projection_error_scale)
+    interframe_dissimilarity_weights = 0.5 * (interframe_canvas_projection_error_weights + interframe_canvas_projection_error_weights.T)
+
+    embedding_frame_idxs = np.where(np.sum(interframe_dissimilarity_weights, axis=0) > 1)[0]
+    embedding_dissimilarities = interframe_dissimilarities[embedding_frame_idxs[:, None], embedding_frame_idxs]
+    embedding_weights = interframe_dissimilarity_weights[embedding_frame_idxs[:, None], embedding_frame_idxs]
+
+    non_diag_mask = ~np.identity(len(embedding_frame_idxs), dtype=bool)
+    if np.mean(embedding_dissimilarities) < 1e-8:
+        embedding_dissimilarities[non_diag_mask] = 1e-8
+    if np.mean(embedding_weights[non_diag_mask]) < 1e-8:
+        embedding_weights[non_diag_mask] = 1e-8
+
+    # Higher n_components should converge to an embedding that fits dissimilarities with lower residual errors / stress,
+    # but may not generalise well to missing dissimilarities?
+    # Also the variance of distances (such as Euclidean or Manhattan) between points converges to zero as the number of
+    # dimensions increases https://towardsdatascience.com/curse-of-dimensionality-an-intuitive-exploration-1fbf155e1411/
+    for n_components in [2, 3, 6]:
+        embedding, stress, n_iter = rsatoolbox.util.vis_utils.smacof(embedding_dissimilarities, metric=True, n_components=n_components, n_init=8, n_jobs=-1,
+                                                                     max_iter=300, random_state=0, return_n_iter=True, weight=embedding_weights)
+
+        embedding_costs = np.full((len(key_frame_indices), len(key_frame_indices)), fill_value=np.nan, dtype=np.float32)
+        embedding_costs[embedding_frame_idxs[:, None], embedding_frame_idxs] = sklearn.metrics.euclidean_distances(embedding)
+
+        embedding_cost_values = embedding_costs[~np.identity(embedding_costs.shape[0], dtype=bool)]
+        embedding_cost_values = embedding_cost_values[np.isfinite(embedding_cost_values)]
+
+        gm = sklearn.mixture.GaussianMixture(n_components=2, covariance_type='diag', random_state=0)
+        gm.fit(embedding_cost_values[:, None])
+        component_idxs = np.argsort(gm.means_[:, 0])
+
+        # Locate the intersection point between the two Gaussian Mixture component means (if it exists).
+        # There may be no such intersection point if the distribution is fundamentally unimodal - this
+        # commonly arises when the number of key frames is small.
+        # https://stackoverflow.com/questions/22579434/python-finding-the-intersection-point-of-two-gaussian-curves
+        a = 1 / (2 * gm.covariances_[component_idxs[0], 0]) - 1 / (2 * gm.covariances_[component_idxs[1], 0])
+        b = (gm.means_[component_idxs[1], 0] / gm.covariances_[component_idxs[1], 0]
+             - gm.means_[component_idxs[0], 0] / gm.covariances_[component_idxs[0], 0])
+        c = (np.power(gm.means_[component_idxs[0], 0], 2) / (2 * gm.covariances_[component_idxs[0], 0])
+             - np.power(gm.means_[component_idxs[1], 0], 2) / (2 * gm.covariances_[component_idxs[1], 0])
+             - np.log(gm.covariances_[component_idxs[1], 0] / gm.covariances_[component_idxs[0], 0]) / 2
+             - np.log(gm.weights_[component_idxs[0]] / gm.weights_[component_idxs[1]]))
+        gm_intersections = np.roots([a, b, c])
+        inter_idxs = np.where((gm.means_[component_idxs[0], 0] < gm_intersections) & (gm_intersections < gm.means_[component_idxs[1], 0]))[0]
+        gm_component_intersection = gm_intersections[inter_idxs[0]] if len(inter_idxs) == 1 else np.nan
+
+        print('GMM n_components, stress, n_iter, gm_component_intersection',
+              n_components, stress, n_iter, gm_component_intersection)
+
+        print('outlier component P(X = mesh_frame_dissimilarity_threshold)',
+              gm.weights_[component_idxs[1]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_threshold,
+                                                                    loc=gm.means_[component_idxs[1], 0],
+                                                                    scale=np.sqrt(gm.covariances_[component_idxs[1], 0])))
+        print('outlier component P(X < mesh_frame_dissimilarity_threshold)',
+              gm.weights_[component_idxs[1]] * scipy.stats.norm.cdf(mesh_frame_dissimilarity_threshold,
+                                                                    loc=gm.means_[component_idxs[1], 0],
+                                                                    scale=np.sqrt(gm.covariances_[component_idxs[1], 0])))
+        print('outlier component P(X < mesh_frame_dissimilarity_threshold | outlier)',
+              scipy.stats.norm.cdf(mesh_frame_dissimilarity_threshold,
+                                   loc=gm.means_[component_idxs[1], 0],
+                                   scale=np.sqrt(gm.covariances_[component_idxs[1], 0])))
+        print('inlier component P(X = mesh_frame_dissimilarity_boundary)',
+              gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_boundary,
+                                                                    loc=gm.means_[component_idxs[0], 0],
+                                                                    scale=np.sqrt(gm.covariances_[component_idxs[0], 0])))
+        print('inlier component P(X > mesh_frame_dissimilarity_boundary)',
+              gm.weights_[component_idxs[0]] * (1 - scipy.stats.norm.cdf(mesh_frame_dissimilarity_boundary,
+                                                                         loc=gm.means_[component_idxs[0], 0],
+                                                                         scale=np.sqrt(gm.covariances_[component_idxs[0], 0]))))
+        print('inlier component P(X > mesh_frame_dissimilarity_boundary | inlier)',
+              1 - scipy.stats.norm.cdf(mesh_frame_dissimilarity_boundary,
+                                       loc=gm.means_[component_idxs[0], 0],
+                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])))
+
+        # Clustering principally based on embedding location and dissimilarity distance, but
+        # also influenced by density / coupling
+        if False:
+            #distance_threshold = gm_component_intersection
+            distance_threshold = 1.5 * mesh_frame_dissimilarity_threshold
+            #distance_threshold = mesh_frame_dissimilarity_boundary
+            clustering = sklearn.cluster.AgglomerativeClustering(n_clusters=None, linkage='complete',
+                                                                 distance_threshold=distance_threshold)
+            clustering.fit(embedding)
+            embedding_cluster_count = clustering.n_clusters_
+        elif True:
+            #bandwidth = sklearn.cluster.estimate_bandwidth(embedding, quantile=0.3, n_samples=500)
+            bandwidth = 0.75 * mesh_frame_dissimilarity_threshold
+            clustering = sklearn.cluster.MeanShift(bandwidth=bandwidth, bin_seeding=True)
+            clustering.fit(embedding)
+            embedding_cluster_count = len(set(clustering.labels_))
+        else:
+            preference = -10 * np.power(mesh_frame_dissimilarity_threshold, 2)
+            clustering = sklearn.cluster.AffinityPropagation(preference=preference, random_state=0)
+            clustering.fit(embedding)
+            embedding_cluster_count = len(set(clustering.labels_))
+
+        embedding_cluster_labels = np.full((len(key_frame_indices),), fill_value=-1, dtype=np.int32)
+        embedding_cluster_labels[embedding_frame_idxs] = clustering.labels_
+
+        print('embedding_cluster_count', embedding_cluster_count)
+
+        """
+        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+        if n_components == 2:
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(1, 1, 1)
+            plt.plot(*embedding.T, alpha=0.5)
+            for cluster_idx, colour, marker in zip(range(embedding_cluster_count), colour_sequence, marker_sequence):
+                plt.scatter(*embedding[clustering.labels_ == cluster_idx].T, s=200, color=colour, marker=marker, alpha=0.5)
+            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                plt.text(*xy, f'{frame_idx}')
+            ax.set_aspect('equal', adjustable='datalim')
+            plt.tight_layout()
+            stash_fig_page()
+        elif n_components >= 3:
+            if n_components > 3:
+                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                mds.fit(embedding)
+                embedding_3d = mds.embedding_
+            else:
+                embedding_3d = embedding
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax3 = plt.subplot(1, 1, 1, projection='3d')
+            ax3.plot(*embedding_3d.T, alpha=0.5)
+            for cluster_idx, colour, marker in zip(range(embedding_cluster_count), colour_sequence, marker_sequence):
+                ax3.scatter(*embedding_3d[clustering.labels_ == cluster_idx].T, s=200, color=colour, marker=marker, alpha=0.5)
+            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                ax3.text(*xyz, f'{frame_idx}')
+            ax3.set_aspect('equal', adjustable='datalim')
+            ax3.set_xlabel('X')
+            ax3.set_ylabel('Y')
+            ax3.set_zlabel('Z')
+            plt.tight_layout()
+            stash_fig_page()
+        """
+
+        target_frame_idxs = []
+        for cluster_idx in range(embedding_cluster_count):
+            cluster_frame_idxs = np.where(embedding_cluster_labels == cluster_idx)[0]
+            target_frame_idxs.append(cluster_frame_idxs[np.argmax(frame_synth_projection_scores[cluster_frame_idxs])])
+
+        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+        if n_components == 2:
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(1, 1, 1)
+            plt.plot(*embedding.T, alpha=0.5)
+            marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
+            for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
+                cluster_mask = clustering.labels_ == clustering.labels_[target_frame_idx]
+                plt.scatter(*embedding[cluster_mask, :].T,
+                            s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5, label=target_frame_idx)
+                plt.scatter(*embedding[embedding_frame_idxs == target_frame_idx, :].T, s=4000,
+                            edgecolor=colour, facecolor='none', marker=marker, alpha=0.5)
+            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                plt.text(*xy, f'{frame_idx}')
+            ax.set_aspect('equal', adjustable='datalim')
+            plt.legend()
+            plt.tight_layout()
+            stash_fig_page()
+        elif n_components >= 3:
+            if n_components > 3:
+                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                mds.fit(embedding)
+                embedding_3d = mds.embedding_
+            else:
+                embedding_3d = embedding
+            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax3 = plt.subplot(1, 1, 1, projection='3d')
+            ax3.plot(*embedding_3d.T, alpha=0.5)
+            marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
+            for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
+                cluster_mask = clustering.labels_ == clustering.labels_[target_frame_idx]
+                ax3.scatter(*embedding_3d[cluster_mask, :].T,
+                            s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5, label=target_frame_idx)
+                ax3.scatter(*embedding_3d[embedding_frame_idxs == target_frame_idx, :].T, s=4000,
+                            edgecolor=colour, facecolor='none', marker=marker, alpha=0.5)
+            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                ax3.text(*xyz, f'{frame_idx}')
+            ax3.set_aspect('equal', adjustable='datalim')
+            ax3.set_xlabel('X')
+            ax3.set_ylabel('Y')
+            ax3.set_zlabel('Z')
+            plt.legend()
+            plt.tight_layout()
+            stash_fig_page()
+
+        plt.figure('Embedding costs', figsize=(16, 10))
+        setup_new_fig_page()
+        plt.suptitle(f'n_components: {n_components}')
+        ax = plt.subplot(2, 3, 1)
+        plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
+        plt.title('interframe_dissimilarities')
+        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+        plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
+        plt.title('interframe_dissimilarity_weights')
+        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+        plt.imshow(embedding_costs, cmap='jet', interpolation='none')
+        plt.title('embedding_costs')
+        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+        plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
+        plt.title('embedding_costs / interframe_dissimilarities')
+        plt.subplot(2, 3, 6)
+        bins = np.linspace(0, 1, 51)
+        plt.hist(embedding_cost_values, bins=bins, density=True)
+        for component_idx in np.argsort(gm.means_[:, 0]):
+            plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
+                                                                             scale=np.sqrt(gm.covariances_[component_idx, 0])))
+        plt.axvline(mesh_frame_dissimilarity_threshold, color='black', linestyle='--')
+        plt.axvline(mesh_frame_dissimilarity_boundary, color='red', linestyle='--')
+        plt.axvline(gm_component_intersection, color='blue', linestyle='--')
+        plt.plot(mesh_frame_dissimilarity_threshold,
+                 gm.weights_[component_idxs[1]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_threshold,
+                                                                       loc=gm.means_[component_idxs[1], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[1], 0])),
+                 'ko')
+        plt.plot(mesh_frame_dissimilarity_boundary,
+                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(mesh_frame_dissimilarity_boundary,
+                                                                       loc=gm.means_[component_idxs[0], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                 'ro')
+        plt.plot(gm_component_intersection,
+                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
+                                                                       loc=gm.means_[component_idxs[0], 0],
+                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                 'bo')
+        plt.title('embedding_cost_values')
+        plt.tight_layout()
+        stash_fig_page()
+    '''
 
     # %%
 
@@ -1157,7 +1914,7 @@ if __name__ == '__main__':
             inlier_scores = nan_gaussian_filter(cross_flow_inlier)
             inlier_scores[~cross_flow_inlier] = 0
 
-            flow_discrepancy_score = cauchy(np.linalg.norm(secondary_mesh_cross_flow - primary_mesh_cross_flow, axis=-1), 10)
+            flow_discrepancy_score = cauchy(np.linalg.norm(np.linalg.inv(camera_intrinsic[:2, :2]) @ (secondary_mesh_cross_flow - primary_mesh_cross_flow)[:, :, :, None], axis=(-2, -1)), 0.015)
 
             flow_gradient_x = np.gradient(primary_mesh_cross_flow, grid_step, edge_order=2, axis=1)
             flow_gradient_y = np.gradient(primary_mesh_cross_flow, grid_step, edge_order=2, axis=0)
@@ -1172,7 +1929,10 @@ if __name__ == '__main__':
             assert ~np.any(np.abs(flow_grid_gradient_cross) > (1 + 1e-6) * np.linalg.norm(flow_gradient_x, axis=-1) * np.linalg.norm(flow_gradient_y, axis=-1))
             flow_grid_orthogonality_score = cauchy(np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1)),
                                                    #np.pi / 2 * cauchy(interframe_angles[primary_frame_idx, secondary_frame_idx], np.pi / 4))
+                                                   #np.pi / 3)
                                                    np.pi / 4)
+            #flow_grid_orthogonality_angle = np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1))
+            #flow_grid_orthogonality_score = 0.5 * (1 - scipy.special.erf((flow_grid_orthogonality_angle - np.pi / 6) / (np.pi / 6 / 1.5)))
 
             flow_laplacian_x = np.gradient(flow_gradient_x, grid_step, edge_order=2, axis=1)
             flow_laplacian_x_transverse_normed = np.abs(np.sum(np.stack([-flow_laplacian_x[:, :, 1], flow_laplacian_x[:, :, 0]], axis=-1) * flow_gradient_x, axis=-1)) / np.sum(np.power(flow_gradient_x, 2), axis=-1)
@@ -1200,6 +1960,7 @@ if __name__ == '__main__':
             mapping_scores[secondary_frame_idx, :, :] = mapping_score
 
             sec_img = frame_images[secondary_frame_idx]
+            _, _, _, color_img, _ = integrated_weighted_depth_kernels[primary_frame_idx]
 
             plt.figure('Synthetic frame scores', figsize=(24, 12))
             setup_new_fig_page()
@@ -1211,19 +1972,24 @@ if __name__ == '__main__':
             inlier_mask = ((primary_mesh_projected_points[0, :] > -0.5) & (primary_mesh_projected_points[0, :] < sec_img.shape[1] - 0.5)
                            & (primary_mesh_projected_points[1, :] > -0.5) & (primary_mesh_projected_points[1, :] < sec_img.shape[0] - 0.5))
             plt.scatter(*primary_mesh_projected_points[:, inlier_mask], s=1, c='b', alpha=0.9)
-            ax = plt.subplot(3, 3, 3)
+            ax = plt.subplot(3, 3, 4)
+            # Apply np.require() as a workaround for ValueError: arrays must be of dtype byte, short, float32 or float64
+            # https://github.com/matplotlib/matplotlib/issues/28448
+            plt.imshow(np.require(color_img, dtype=np.float32) / 255, extent=xys_extent)
+            plt.title('integrated colour image')
+            plt.subplot(3, 3, 5, sharex=ax, sharey=ax)
             plt.imshow(mapping_score, vmin=0, vmax=1, extent=xys_extent)
             plt.title('mapping_score')
-            plt.subplot(3, 3, 4, sharex=ax, sharey=ax)
+            plt.subplot(3, 3, 6, sharex=ax, sharey=ax)
             plt.imshow(flow_discrepancy_score, vmin=0, vmax=1, extent=xys_extent)
             plt.title('flow_discrepancy_score')
-            plt.subplot(3, 3, 5, sharex=ax, sharey=ax)
+            plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
             plt.imshow(flow_grid_scaling_aspect_score, vmin=0, vmax=1, extent=xys_extent)
             plt.title('flow_grid_scaling_aspect_score')
-            plt.subplot(3, 3, 6, sharex=ax, sharey=ax)
+            plt.subplot(3, 3, 8, sharex=ax, sharey=ax)
             plt.imshow(flow_grid_orthogonality_score, vmin=0, vmax=1, extent=xys_extent)
             plt.title('flow_grid_orthogonality_score')
-            plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
+            plt.subplot(3, 3, 9, sharex=ax, sharey=ax)
             plt.imshow(flow_laplacian_score, vmin=0, vmax=1, extent=xys_extent)
             plt.title('flow_laplacian_score')
             plt.tight_layout()
@@ -1362,7 +2128,8 @@ if __name__ == '__main__':
         model_frames = torch.tensor(np.identity(down_mapping_scores.shape[0])[primary_frame_idx, :][:, None, None] * np.ones(down_mapping_scores.shape[1:]),
                                     dtype=torch.float32, requires_grad=True)
         # TODO: only map & optimise the set of coherent secondary frames, which would make the application of np.nan_to_num() redundant
-        model_interframe_costs = torch.tensor(np.nan_to_num(interframe_costs, nan=1.0), dtype=torch.float32)
+        # Raise the interframe cost floor to apply a minimum base value for any junction/interface between frames
+        model_interframe_costs = torch.tensor(np.maximum(interframe_costs, 0.1) * (1 - np.identity(len(np.diag(interframe_costs)))), dtype=torch.float32)
 
         def loss_fn():
             prob_model_frames = torch.nn.functional.softmax(model_frames, dim=0)

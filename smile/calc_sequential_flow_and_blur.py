@@ -13,6 +13,7 @@ SPDX-License-Identifier: MIT
 import sys
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -44,19 +45,24 @@ from pipeline_server import start_pipeline_server, post_to_pipeline_server, get_
 
 if __name__ == '__main__':
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    if not working_subdir_config_path.exists():
-        print('The working sub-directory configuration file does not exist')
-        dirpaths = sorted([(dirpath.name, len(list(dirpath.iterdir()))) for dirpath in pathlib.Path(r'../pipeline-input').iterdir() if dirpath.is_dir()],
-                          key=lambda item: item[1])
-        selected_dirpath, _ = dirpaths[0]
-        print('Defaulting to the sub-directory containing the shortest sequence of frames', selected_dirpath)
-        working_subdir_config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(working_subdir_config_path, 'w') as config_file:
-            config_file.write(selected_dirpath)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        if not working_subdir_config_path.exists():
+            print('The working sub-directory configuration file does not exist')
+            dirpaths = sorted([(dirpath.name, len(list(dirpath.iterdir()))) for dirpath in pathlib.Path(r'../pipeline-input').iterdir() if dirpath.is_dir()],
+                              key=lambda item: item[1])
+            selected_dirpath, _ = dirpaths[0]
+            print('Defaulting to the sub-directory containing the shortest sequence of frames', selected_dirpath)
+            working_subdir_config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(working_subdir_config_path, 'w') as config_file:
+                config_file.write(selected_dirpath)
 
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     input_source_dirpath = pathlib.Path(r'../pipeline-input') / working_subdir
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir

@@ -14,6 +14,7 @@ import builtins
 import warnings
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -67,9 +68,14 @@ if __name__ == '__main__':
 
     torch.set_default_device(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'
@@ -2736,7 +2742,10 @@ if __name__ == '__main__':
                 assert ~np.any(np.abs(flow_grid_gradient_cross) > (1 + 1e-6) * np.linalg.norm(flow_gradient_x, axis=-1) * np.linalg.norm(flow_gradient_y, axis=-1))
                 flow_grid_orthogonality_score = cauchy(np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1)),
                                                        #np.pi / 2 * cauchy(interframe_angle, np.pi / 2))
+                                                       #np.pi / 3)
                                                        np.pi / 4)
+                #flow_grid_orthogonality_angle = np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1))
+                #flow_grid_orthogonality_score = 0.5 * (1 - scipy.special.erf((flow_grid_orthogonality_angle - np.pi / 6) / (np.pi / 6 / 1.5)))
 
                 flow_laplacian_x = np.gradient(flow_gradient_x, grid_step, edge_order=2, axis=1)
                 flow_laplacian_x_transverse_normed = np.abs(np.sum(np.stack([-flow_laplacian_x[:, :, 1], flow_laplacian_x[:, :, 0]], axis=-1) * flow_gradient_x, axis=-1)) / np.sum(np.power(flow_gradient_x, 2), axis=-1)

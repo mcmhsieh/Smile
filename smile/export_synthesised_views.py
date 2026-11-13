@@ -9,6 +9,7 @@ SPDX-License-Identifier: MIT
 """
 
 import time
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -102,9 +103,14 @@ def visualise_geometries(geometries, image_size, camera_intrinsic, lookat, up, f
 
 if __name__ == '__main__':
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'
@@ -499,7 +505,7 @@ if __name__ == '__main__':
         fig_ax1.cla()
         fig_ax1.set_facecolor('grey')
         fig_ax1.imshow(np.clip(np.require(filtered_up_model_synthetic_frame_img, dtype=np.float32) / 255, 0, 1))
-        #fig_ax1.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N, interpolation_stage='rgba', alpha=0.2)
+        #fig_ax1.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba', alpha=0.2)
         fig_ax2.cla()
         fig_elements['sec_img'] = fig_ax2.imshow(np.require(frame_images[secondary_frame_idxs[0]], dtype=np.uint8))
         fig_elements['sec_title'] = fig_ax2.set_title(f'frame idx: {secondary_frame_idxs[0]}')

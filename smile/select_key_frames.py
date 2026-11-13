@@ -12,6 +12,7 @@ SPDX-License-Identifier: MIT
 import sys
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -42,9 +43,14 @@ from pipeline_server import start_pipeline_server, post_to_pipeline_server, get_
 
 if __name__ == '__main__':
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     input_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'
@@ -238,7 +244,10 @@ if __name__ == '__main__':
         assert ~np.any(np.abs(flow_grid_gradient_cross) > (1 + 1e-6) * np.linalg.norm(flow_gradient_x, axis=-1) * np.linalg.norm(flow_gradient_y, axis=-1))
         flow_grid_orthogonality_score = cauchy(np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1)),
                                                #np.pi / 2)
+                                               #np.pi / 3)
                                                np.pi / 4)
+        #flow_grid_orthogonality_angle = np.pi / 2 - np.arcsin(np.clip(flow_grid_gradient_cross / np.linalg.norm(flow_gradient_x, axis=-1) / np.linalg.norm(flow_gradient_y, axis=-1), -1, 1))
+        #flow_grid_orthogonality_score = 0.5 * (1 - scipy.special.erf((flow_grid_orthogonality_angle - np.pi / 6) / (np.pi / 6 / 1.5)))
 
         #flow_grid_scaling_score = cauchy(np.sqrt(np.max(np.stack([flow_grid_gradient_cross, 1 / flow_grid_gradient_cross]), axis=0)) - 1, 0.2)
         #flow_grid_scaling_score = cauchy(np.max(np.stack([flow_grid_gradient_cross, 1 / flow_grid_gradient_cross]), axis=0) - 1, 0.3)

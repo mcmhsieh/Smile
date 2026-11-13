@@ -12,6 +12,7 @@ import builtins
 import warnings
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -50,9 +51,14 @@ from pipeline_server import start_pipeline_server, post_to_pipeline_server, get_
 
 if __name__ == '__main__':
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'

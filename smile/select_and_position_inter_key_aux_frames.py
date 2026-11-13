@@ -13,6 +13,7 @@ import sys
 import warnings
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -55,9 +56,14 @@ if __name__ == '__main__':
 
     torch.set_default_device(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'

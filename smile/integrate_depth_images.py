@@ -14,6 +14,7 @@ import builtins
 import warnings
 import time
 import datetime
+import argparse
 import pathlib
 import shutil
 import pickle
@@ -65,9 +66,14 @@ if __name__ == '__main__':
 
     # %%
 
-    working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
-    with open(working_subdir_config_path, 'r') as config_file:
-        working_subdir = config_file.read().rstrip('\n')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--working_subdir')
+    args = parser.parse_args()
+    working_subdir = args.working_subdir
+    if working_subdir is None:
+        working_subdir_config_path = pathlib.Path(r'../pipeline-workspace/working_subdir.txt')
+        with open(working_subdir_config_path, 'r') as config_file:
+            working_subdir = config_file.read().rstrip('\n')
 
     workspace_dirpath = pathlib.Path(r'../pipeline-workspace') / working_subdir
     image_source_dirpath = workspace_dirpath / 'calc_sequential_flow_and_blur'
@@ -200,6 +206,135 @@ if __name__ == '__main__':
 
     # %%
 
+    """
+    # TODO: select representative triangulated points using octree
+
+    valid_mask = np.all(np.isfinite(model_triangulated_points[:3, :]), axis=0)
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, valid_mask].T))
+    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=64))
+    #pcd.orient_normals_to_align_with_direction(orientation_reference=np.array([0, 0, -1]))
+    # https://github.com/isl-org/Open3D/blob/v0.18.0/cpp/open3d/geometry/PointCloud.h
+    # Function to consistently orient estimated normals based on consistent tangent planes as described in Hoppe et al.,
+    # "Surface Reconstruction from Unorganized Points", 1992.
+    # Further details on parameters are described in Piazza, Valentini, Varetti, "Mesh Reconstruction from Point Cloud", 2023.
+    #  - k: k nearest neighbour for graph reconstruction for normal propagation.
+    #  - lambda: penalty constant on the distance of a point from the tangent plane
+    #  - cos_alpha_tol: threshold that defines the amplitude of the cone spanned by the reference normal
+    # pcd.orient_normals_consistent_tangent_plane tends to invert normals for points not fully aligned with the primary surface
+    #pcd.orient_normals_consistent_tangent_plane(**{'k': 30, 'lambda': 0.0, 'cos_alpha_tol': 1.0})
+    #if np.mean(np.array(pcd.normals)[:, 2]) > 0:
+    #    pcd.normals = o3d.utility.Vector3dVector(-np.array(pcd.normals))
+    pcd_points = np.array(pcd.points).T
+    pcd_normals = np.array(pcd.normals).T
+    normal_ray_alignment = np.zeros((np.sum(valid_mask),), dtype=np.float32)
+    for image_to_triangulated_point_idxs, camera_extrinsic in zip(key_frame_image_triangulated_point_idxs,
+                                                                  camera_extrinsics):
+        triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
+        triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
+        image_points_weights = np.zeros((model_triangulated_points.shape[1],), dtype=np.float32)
+        image_points_weights[triangulated_point_idxs] = 1
+
+        R = camera_extrinsic[:3, :3]
+        t = camera_extrinsic[:3, 3:]
+        object_points = R @ pcd_points + t
+        object_normals = R @ pcd_normals
+
+        object_point_ray = object_points / np.clip(np.linalg.norm(object_points, axis=0), 1e-6, np.inf)
+        normal_ray_alignment += np.sum(object_point_ray * object_normals, axis=0) * image_points_weights[valid_mask]
+    pcd.normals = o3d.utility.Vector3dVector((pcd_normals * -np.sign(normal_ray_alignment)).T)
+    assert np.allclose(np.linalg.norm(np.array(pcd.normals), axis=1), 1)
+
+    model_triangulated_normals = np.full((3, model_triangulated_points.shape[1]), fill_value=np.nan, dtype=np.float32)
+    model_triangulated_normals[:, valid_mask] = np.array(pcd.normals).T
+
+    ray_normal_loss = []
+    for camera_extrinsic in camera_extrinsics:
+        triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:3, :] + camera_extrinsic[:3, 3:]
+        triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals
+        camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
+        ray_normal_angles = np.arccos(np.clip(np.sum(-triangulated_normals * camera_rays, axis=0), -1, 1))
+        ray_normal_loss.append(0.5 * (1 + scipy.special.erf((ray_normal_angles - 8 / 12 * np.pi) / (np.pi / 12))))
+    ray_normal_loss = np.array(ray_normal_loss)
+    """
+
+    # %%
+
+    """
+    interframe_angles = []
+    interframe_normal_loss = []
+    interframe_triangulated_overlap = []
+    for primary_frame_idx, primary_frame_camera_extrinsic in enumerate(camera_extrinsics):
+        interframe_angles.append([])
+        interframe_normal_loss.append([])
+        interframe_triangulated_overlap.append([])
+        for secondary_frame_idx, secondary_frame_camera_extrinsic in enumerate(camera_extrinsics):
+            camera_transform = secondary_frame_camera_extrinsic @ np.linalg.inv(primary_frame_camera_extrinsic)
+
+            rvec, _ = cv2.Rodrigues(camera_transform[:3, :3])
+            # Ignore rotation around the z-axis (in the primary frame of reference)
+            interframe_angles[-1].append(np.linalg.norm(rvec[:2]))
+
+            # Extract the indices of the common set of triangulated points between the primary and secondary frames
+            xsc, ysc = key_frame_image_sample_points[primary_frame_idx]
+            primary_image_points = np.vstack([xsc, ysc])
+            primary_image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[primary_frame_idx]
+            primary_triangulated_image_idxs = np.where(primary_image_to_triangulated_point_idxs >= 0)[0]
+            primary_triangulated_idxs = primary_image_to_triangulated_point_idxs[primary_triangulated_image_idxs]
+            valid_mask = np.all(np.isfinite(model_triangulated_points[:3, primary_triangulated_idxs]), axis=0)
+            primary_triangulated_image_idxs = primary_triangulated_image_idxs[valid_mask]
+            primary_triangulated_idxs = primary_triangulated_idxs[valid_mask]
+            primary_triangulated_idxs_to_image_idxs = dict(zip(primary_triangulated_idxs, primary_triangulated_image_idxs))
+
+            secondary_image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[secondary_frame_idx]
+            secondary_triangulated_image_idxs = np.where(secondary_image_to_triangulated_point_idxs >= 0)[0]
+            secondary_triangulated_idxs = secondary_image_to_triangulated_point_idxs[secondary_triangulated_image_idxs]
+
+            common_triangulated_idxs = np.array(list(set(list(primary_triangulated_idxs)) & set(list(secondary_triangulated_idxs))), dtype=int)
+
+            if len(common_triangulated_idxs) > 0:
+                interframe_normal_loss[-1].append(np.sqrt(np.mean(np.power(np.maximum(ray_normal_loss[secondary_frame_idx, common_triangulated_idxs]
+                                                                                      - ray_normal_loss[primary_frame_idx, common_triangulated_idxs], 0), 2))))
+            else:
+                interframe_normal_loss[-1].append(np.nan)
+
+            primary_triangulated_image_idxs = list(map(primary_triangulated_idxs_to_image_idxs.get, common_triangulated_idxs))
+            primary_triangulated_image_points = primary_image_points[:, primary_triangulated_image_idxs].T
+
+            pad_width = 16
+            image_mask = np.full(np.array(image_size[::-1]) + pad_width * 2, fill_value=0, dtype=np.uint8)
+            image_points = np.round(primary_triangulated_image_points).astype(int) + pad_width
+            image_mask[image_points[:, 1], image_points[:, 0]] = 1
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            image_mask = cv2.morphologyEx(image_mask, op=cv2.MORPH_CLOSE, kernel=kernel,
+                                          iterations=1, borderType=cv2.BORDER_CONSTANT, borderValue=0)
+
+            image_mask_idxs = np.where(image_mask[pad_width:-pad_width, pad_width:-pad_width])
+
+            interframe_triangulated_overlap[-1].append(np.array(image_mask_idxs).shape[1] / np.prod(image_size))
+
+    interframe_angles = np.array(interframe_angles)
+    interframe_normal_loss = np.array(interframe_normal_loss)
+    interframe_triangulated_overlap = np.array(interframe_triangulated_overlap)
+
+    plt.figure('Interframe dissimilarities', figsize=(16, 10))
+    plt.clf()
+    ax = plt.subplot(2, 3, 1)
+    plt.imshow(interframe_angles)
+    plt.title('interframe_angles')
+    ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+    vmaxabs = np.max(np.abs(interframe_normal_loss))
+    plt.imshow(interframe_normal_loss, vmin=-vmaxabs, vmax=vmaxabs, cmap='seismic')
+    plt.title('interframe_normal_loss')
+    ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+    plt.imshow(interframe_triangulated_overlap, vmin=0, vmax=1, cmap='jet', interpolation='none')
+    plt.title('interframe_triangulated_overlap')
+    plt.subplot(2, 3, 3)
+    plt.tight_layout()
+    """
+
+    # %%
+
     interframe_angles = []
     interframe_orbit_arc_curvature = []
     interframe_triangulated_overlap = []
@@ -280,7 +415,20 @@ if __name__ == '__main__':
     symmetric_interframe_orbit_arc_curvature = 0.5 * (interframe_orbit_arc_curvature + interframe_orbit_arc_curvature.T)
     symmetric_interframe_triangulated_overlap = 0.5 * (interframe_triangulated_overlap + interframe_triangulated_overlap.T)
 
-    interframe_dissimilarities = 0.5 * (1 + scipy.special.erf((symmetric_interframe_orbit_arc_curvature - 1.5) / (2 / 3)))
+    # On inspecting a sample dataset, an orbit arc curvature value of ~2.2 is observed between a pair of frames where the camera
+    # poses are oriented towards the lingual and buccal surfaces respectively, and the integration of their depth images results in
+    # a canvas that produces a synthesised view with a prominent disjoint at the interface between the mapped frames.
+    # Based on this observation, map orbit arc curvature values above 1.5 to mutually exclusive integration frame weights.
+    # First map orbit arc curvature = 1.5 to interframe_dissimilarities = 0.5 (the mid level of the sigmoid function, so that there is
+    # still headroom for larger orbit arc curvature values to be mapped by MDS into embedding_costs), then map embedding_costs
+    # above 0.5 to diminished integration frame weights.
+    # TODO: Consider separating the frame camera extrinsic from the canvas integration frame weights so that the integration frame weights
+    # do not have to be symmetrically centred around the target frame in the embedded space. For example, if frames 8 and 27 should be
+    # exclusive, then a canvas for frame 16 could be constructed around frames 16 & 8, e.g. based / centred at some mid-way location.
+    # Also consider multiple candidate canvasses, e.g. both 16 & 8 and 16 & 27 by finding groups/sets of component frames where each member
+    # is consistent/compatible with all the other members perhaps using sampling (e.g. Monte Carlo) to evaluate group dissimilarities
+    # directly rather than relying on the embedding space (especially if the MDS residual errors / stress are high).
+    interframe_dissimilarities = 0.5 * (1 + scipy.special.erf((symmetric_interframe_orbit_arc_curvature - 1.5) / (1.0 / 1.5)))
     np.fill_diagonal(interframe_dissimilarities, 0)
     interframe_dissimilarity_weights = np.sqrt(symmetric_interframe_triangulated_overlap)
     np.fill_diagonal(interframe_dissimilarity_weights, 1)
@@ -404,6 +552,10 @@ if __name__ == '__main__':
 
     def integrate_tsdf_rgbd(vox_coords_pcd, tsdf_weight_colour, tsdf_threshold, rgb_img, depth_imgs, confidence_maps,
                             camera_intrinsic, camera_extrinsic):
+        assert depth_imgs.shape == confidence_maps.shape
+        if depth_imgs.shape[0] == 0:
+            return
+
         # TODO: speed up by calculating corners of coarse grid?
         pcd = o3d.geometry.PointCloud(vox_coords_pcd)
         pcd.transform(np.block([[camera_intrinsic, np.zeros((3, 1))], [0, 0, 0, 1]]) @ camera_extrinsic)
@@ -418,25 +570,59 @@ if __name__ == '__main__':
         view_uv = np.round(uv[:, view_idxs]).astype(np.int32)
         view_z = xyz[2, view_idxs]
 
-        for depth_img, confidence_map in zip(depth_imgs, confidence_maps):
-            view_uv_depth = depth_img[view_uv[1, :], view_uv[0, :]]
-            # Interior values are negative, exterior values are positive
-            signed_distance = (view_uv_depth - view_z) / tsdf_threshold
+        if True:
+            for depth_img, confidence_map in zip(depth_imgs, confidence_maps):
+                view_uv_depth = depth_img[view_uv[1, :], view_uv[0, :]]
+                # Interior values are negative, exterior values are positive
+                signed_distance = (view_uv_depth - view_z) / tsdf_threshold
 
-            # The TSDF weight is normally distributed with tail values of np.exp(-4.5) = 0.011 at [-tsdf_threshold, +tsdf_threshold]
-            # The TSDF signed distance value is linear from [1, -1] between [-tsdf_threshold, +tsdf_threshold]
-            tsdf_mask = (np.abs(signed_distance) < 1) & (view_uv_depth > 0)
-            tsdf_idxs = view_idxs[tsdf_mask]
-            tsdf_uv = view_uv[:, tsdf_mask]
-            tsdf_dist = signed_distance[tsdf_mask]
-            tsdf_weight = np.exp(-4.5 * np.power(tsdf_dist, 2))
+                # The TSDF weight is normally distributed with tail values of np.exp(-4.5) = 0.011 at [-tsdf_threshold, +tsdf_threshold]
+                # The TSDF signed distance value is linear from [1, -1] between [-tsdf_threshold, +tsdf_threshold]
+                tsdf_mask = (np.abs(signed_distance) < 1) & (view_uv_depth > 0)
+                tsdf_idxs = view_idxs[tsdf_mask]
+                tsdf_uv = view_uv[:, tsdf_mask]
+                tsdf_dist = signed_distance[tsdf_mask]
+                tsdf_weight = np.exp(-4.5 * np.power(tsdf_dist, 2))
 
-            obs_tsdf_weight = confidence_map[tsdf_uv[1, :], tsdf_uv[0, :]] * tsdf_weight
-            obs_tsdf_weight[~np.isfinite(obs_tsdf_weight)] = 0
+                obs_tsdf_weight = confidence_map[tsdf_uv[1, :], tsdf_uv[0, :]] * tsdf_weight
+                obs_tsdf_weight[~np.isfinite(obs_tsdf_weight)] = 0
 
-            tsdf_weight_colour[:, tsdf_idxs] += np.vstack([obs_tsdf_weight * tsdf_dist,
-                                                           obs_tsdf_weight,
-                                                           obs_tsdf_weight * rgb_img[tsdf_uv[1, :], tsdf_uv[0, :], :].T])
+                tsdf_weight_colour[:, tsdf_idxs] += np.vstack([obs_tsdf_weight * tsdf_dist,
+                                                               obs_tsdf_weight,
+                                                               obs_tsdf_weight * rgb_img[tsdf_uv[1, :], tsdf_uv[0, :], :].T])
+        else:
+            view_tsdf_weight = np.zeros((len(view_idxs),), dtype=np.float32)
+
+            view_obs = []
+            for depth_img, confidence_map in zip(depth_imgs, confidence_maps):
+                view_uv_depth = depth_img[view_uv[1, :], view_uv[0, :]]
+                # Interior values are negative, exterior values are positive
+                signed_distance = (view_uv_depth - view_z) / tsdf_threshold
+
+                # The TSDF weight is normally distributed with tail values of np.exp(-2.25) = 0.11 at [-tsdf_threshold, +tsdf_threshold]
+                # Since the weights are summed and squared for each view, the weight is effectively
+                # normally distributed with tail values of np.exp(-4.5) = 0.011 at [-tsdf_threshold, +tsdf_threshold]
+                # The TSDF signed distance value is linear from [1, -1] between [-tsdf_threshold, +tsdf_threshold]
+                tsdf_mask = (np.abs(signed_distance) < 1) & (view_uv_depth > 0)
+                tsdf_uv = view_uv[:, tsdf_mask]
+                tsdf_dist = signed_distance[tsdf_mask]
+                tsdf_weight = np.exp(-2.25 * np.power(tsdf_dist, 2))
+
+                obs_tsdf_weight = confidence_map[tsdf_uv[1, :], tsdf_uv[0, :]] * tsdf_weight
+                obs_tsdf_weight[~np.isfinite(obs_tsdf_weight)] = 0
+
+                view_tsdf_weight[tsdf_mask] += obs_tsdf_weight
+
+                view_obs.append((tsdf_mask, tsdf_dist, tsdf_uv))
+
+            view_tsdf_weight = np.power(view_tsdf_weight / len(view_obs), 2)
+
+            for tsdf_mask, tsdf_dist, tsdf_uv in view_obs:
+                obs_tsdf_weight = view_tsdf_weight[tsdf_mask]
+                tsdf_idxs = view_idxs[tsdf_mask]
+                tsdf_weight_colour[:, tsdf_idxs] += np.vstack([obs_tsdf_weight * tsdf_dist,
+                                                               obs_tsdf_weight,
+                                                               obs_tsdf_weight * rgb_img[tsdf_uv[1, :], tsdf_uv[0, :], :].T])
 
     # %%
 
@@ -448,7 +634,7 @@ if __name__ == '__main__':
     # and preserve the field of view of the camera as it recedes (akin to a dolly zoom).
     # As the camera gets further away, projection lines become more parallel and the view approaches isometric projection.
     camera_pull_back_z = 10
-    synthetic_camera_zoom = {(640, 360): 0.5, (480, 640): 1.0}[image_size] * (camera_pull_back_z / 8 + 1)
+    synthetic_camera_zoom = {(640, 360): 0.5, (480, 640): 0.55}[image_size] * (camera_pull_back_z / 8 + 1)
     camera_intrinsic_synthetic = np.block([[camera_intrinsic[:2, :2] * synthetic_camera_zoom, camera_intrinsic[:2, 2:] + np.array(image_size)[:, None]], [0, 0, 1]])
     synthetic_camera_extrinsics = [np.block([[np.identity(3), np.array([0, 0, camera_pull_back_z])[:, None]], [0, 0, 0, 1]]) @ camera_extrinsic
                                    for camera_extrinsic in camera_extrinsics]
@@ -608,9 +794,13 @@ if __name__ == '__main__':
         tsdf_weight_colour[1, :] = 1e-6
 
         for rgbd_frame_idx in depth_image_frame_idxs:
+            # interframe_dissimilarities = 0.5 has been mapped from orbit arc curvature = 1.5 which represents a threshold beyond
+            # which frame weights for integration should be mutually exclusive.
+            # cauchy(0.5, 1 / 3) ~ 0.047
             frame_weight = cauchy(embedding_costs[ref_frame_idx, rgbd_frame_idx], 1 / 3)
+            #frame_weight = 0.5 * (1 - scipy.special.erf((embedding_costs[ref_frame_idx, rgbd_frame_idx] - 0.25) / (0.2 / 1.5)))
             print(rgbd_frame_idx, np.round(np.rad2deg(interframe_angles[ref_frame_idx, rgbd_frame_idx]), 1), np.round(frame_weight, 3))
-            if frame_weight > 0.01:
+            if frame_weight >= 0.01:
                 rgbd_img = filtered_frame_images[rgbd_frame_idx]
                 depth_imgs = []
                 confidence_maps = []
@@ -822,7 +1012,7 @@ if __name__ == '__main__':
             grad_lr = torch.nn.functional.pad(grad_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(grad_lr, (1, 0, 0, 0))
 
             return (torch.sum(depth_err_losses * depth_kernel_zw[:, 1]) / torch.sum(depth_kernel_zw[:, 1])
-                    + 0.5 * torch.mean(grad_ud + grad_lr)
+                    + 0.2 * torch.mean(grad_ud + grad_lr)
                     - gravity * (model_base_depth + torch.mean(model_depth)))
 
         lr = 0.005
@@ -867,14 +1057,14 @@ if __name__ == '__main__':
 
         model_depth_img = model_base_depth.numpy(force=True) + model_depth.numpy(force=True)
 
-        displacement_drop = 0.1
+        displacement_drop = 0.5
 
         with torch.no_grad():
             model_base_depth += displacement_drop
 
         lr = 0.005
         num_steps = 300
-        gravity = 1e-3
+        gravity = 5e-3
         optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr)
         for optim_step in range(num_steps):
             optimiser.zero_grad()
@@ -1171,6 +1361,7 @@ if __name__ == '__main__':
                      'synthetic_image_size': synthetic_image_size,
                      'synthetic_camera_intrinsics': synthetic_camera_intrinsics,
                      'synthetic_camera_extrinsics': synthetic_camera_extrinsics,
+                     'model_depth_images': model_depth_images,
                      'integrated_weighted_canvas_meshes': [{'vertices': np.array(canvas_mesh.vertices, dtype=np.float32),
                                                             'triangles': np.array(canvas_mesh.triangles),
                                                             'vertex_normals': np.array(canvas_mesh.vertex_normals, dtype=np.float32),
