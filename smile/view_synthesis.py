@@ -2049,10 +2049,10 @@ if __name__ == '__main__':
         filtered_up_max_mapping_scores[~filter_mask] = np.nan
 
         #ksizes = 7 * np.power(3, np.arange(4))
-        ksizes = np.power(2, np.arange(6) + 2) - 1
+        ksizes = np.power(2, np.arange(5) + 2) - 1
         filtered_synthetic_frame_imgs = [synthetic_frame_img] + [nan_gaussian_filter(synthetic_frame_img, ksize=(ksize, ksize), unfiltered_point_value=np.nan)
                                                                  for ksize in ksizes]
-        score_thresholds = np.hstack([np.power(0.5, np.arange(len(filtered_synthetic_frame_imgs) - 1)), [0]])
+        score_thresholds = np.power(0.5, np.arange(len(filtered_synthetic_frame_imgs)))
 
         filtered_synthetic_frame_img = np.full((hj, wj, 3), fill_value=np.nan, dtype=np.float32)
         for thresh_low, thresh_high, img_low, img_high in zip(score_thresholds[1:], score_thresholds[:-1],
@@ -2064,6 +2064,11 @@ if __name__ == '__main__':
 
         level_mask = filtered_up_max_mapping_scores <= score_thresholds[-1]
         filtered_synthetic_frame_img[level_mask, :] = filtered_synthetic_frame_imgs[-1][level_mask, :]
+
+        model_depth_img, model_depth_confidence = model_depth_images[primary_frame_idx]
+        assert np.all(np.isfinite(model_depth_confidence))
+        ref_depth_confidence = cv2.resize(model_depth_confidence, dsize=synthetic_image_size, fx=0, fy=0, interpolation=cv2.INTER_LINEAR)
+        filtered_synthetic_frame_img[level_mask & (ref_depth_confidence < 0.5), :] = np.nan
 
         primary_frame_synthesis_elements[primary_frame_idx] = (img, h, w, hj, wj, xys_extent,
                                                                synthetic_camera_extrinsic, synthetic_camera_intrinsic,
@@ -2478,10 +2483,10 @@ if __name__ == '__main__':
         filtered_up_max_model_mapping_scores[~filter_mask] = np.nan
 
         #ksizes = 7 * np.power(3, np.arange(4))
-        ksizes = np.power(2, np.arange(6) + 2) - 1
+        ksizes = np.power(2, np.arange(5) + 2) - 1
         filtered_up_model_synthetic_frame_imgs = [up_model_synthetic_frame_img] + [nan_gaussian_filter(up_model_synthetic_frame_img, ksize=(ksize, ksize), unfiltered_point_value=np.nan)
                                                                                    for ksize in ksizes]
-        score_thresholds = np.hstack([np.power(0.5, np.arange(len(filtered_up_model_synthetic_frame_imgs) - 1)), [0]])
+        score_thresholds = np.power(0.5, np.arange(len(filtered_up_model_synthetic_frame_imgs)))
 
         filtered_up_model_synthetic_frame_img = np.full((hj, wj, 3), fill_value=np.nan, dtype=np.float32)
         for thresh_low, thresh_high, img_low, img_high in zip(score_thresholds[1:], score_thresholds[:-1],
@@ -2493,6 +2498,11 @@ if __name__ == '__main__':
 
         level_mask = filtered_up_max_model_mapping_scores <= score_thresholds[-1]
         filtered_up_model_synthetic_frame_img[level_mask, :] = filtered_up_model_synthetic_frame_imgs[-1][level_mask, :]
+
+        model_depth_img, model_depth_confidence = model_depth_images[primary_frame_idx]
+        assert np.all(np.isfinite(model_depth_confidence))
+        ref_depth_confidence = cv2.resize(model_depth_confidence, dsize=synthetic_image_size, fx=0, fy=0, interpolation=cv2.INTER_LINEAR)
+        filtered_up_model_synthetic_frame_img[level_mask & (ref_depth_confidence < 0.5), :] = np.nan
 
         filename_stem = f'{primary_frame_idx}.{datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")}'
 
