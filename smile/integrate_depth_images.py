@@ -546,51 +546,50 @@ if __name__ == '__main__':
 
     # %%
 
-    # TODO: Optimise with e.g. PyTorch, CuPy, JAX, PyCUDA, Numba. An example approach to consider:
+    # TODO: Consider if other optimisation options might be better e.g. CuPy, JAX, PyCUDA, Numba. An example approach to consider:
     #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/fusion.py
     #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/demo.py
 
-    def integrate_tsdf_rgbd(vox_coords_pcd, tsdf_weight_colour, tsdf_threshold, rgb_img, depth_imgs, confidence_maps,
+    def integrate_tsdf_rgbd(vox_coords, tsdf_weight_colour, tsdf_threshold, rgb_img, depth_imgs, confidence_maps,
                             camera_intrinsic, camera_extrinsic):
         assert depth_imgs.shape == confidence_maps.shape
         if depth_imgs.shape[0] == 0:
             return
 
-        # TODO: speed up by calculating corners of coarse grid?
-        pcd = o3d.geometry.PointCloud(vox_coords_pcd)
-        pcd.transform(np.block([[camera_intrinsic, np.zeros((3, 1))], [0, 0, 0, 1]]) @ camera_extrinsic)
-
-        xyz = np.array(pcd.points, dtype=np.float32).T
-        xyz[:, xyz[2, :] <= 0] = np.nan
+        xyz = camera_intrinsic @ (camera_extrinsic[:3, :3] @ vox_coords + camera_extrinsic[:3, 3:])
+        xyz[:, xyz[2, :] <= 0] = torch.nan
         uv = xyz[:2, :] / xyz[2, :]
 
         h, w = depth_imgs.shape[1:]
-        view_idxs = np.where((uv[0, :] > -0.5) & (uv[0, :] < w - 0.5) & (uv[1, :] > -0.5) & (uv[1, :] < h - 0.5))[0]
+        view_mask = (uv[0, :] > -0.5) & (uv[0, :] < w - 0.5) & (uv[1, :] > -0.5) & (uv[1, :] < h - 0.5)
 
-        view_uv = np.round(uv[:, view_idxs]).astype(np.int32)
-        view_z = xyz[2, view_idxs]
+        uv[:, ~view_mask] = 0
+        view_uv = torch.round(uv).to(torch.int32)
+        view_z = xyz[2, :]
+
+        view_uv_depth = depth_imgs[:, view_uv[1, :], view_uv[0, :]]
+        view_confidence = confidence_maps[:, view_uv[1, :], view_uv[0, :]]
+        view_rgb = rgb_img[view_uv[1, :], view_uv[0, :], :].T
 
         if True:
-            for depth_img, confidence_map in zip(depth_imgs, confidence_maps):
-                view_uv_depth = depth_img[view_uv[1, :], view_uv[0, :]]
-                # Interior values are negative, exterior values are positive
-                signed_distance = (view_uv_depth - view_z) / tsdf_threshold
+            # The TSDF signed distance value is linear with depth and ranges from [1, -1] between depths [-tsdf_threshold, +tsdf_threshold]
+            # Interior values are negative, exterior values are positive
+            signed_distance = (view_uv_depth - view_z) / tsdf_threshold
 
-                # The TSDF weight is normally distributed with tail values of np.exp(-4.5) = 0.011 at [-tsdf_threshold, +tsdf_threshold]
-                # The TSDF signed distance value is linear from [1, -1] between [-tsdf_threshold, +tsdf_threshold]
-                tsdf_mask = (np.abs(signed_distance) < 1) & (view_uv_depth > 0)
-                tsdf_idxs = view_idxs[tsdf_mask]
-                tsdf_uv = view_uv[:, tsdf_mask]
-                tsdf_dist = signed_distance[tsdf_mask]
-                tsdf_weight = np.exp(-4.5 * np.power(tsdf_dist, 2))
+            # The TSDF weight is normally distributed with tail values of torch.exp(-4.5) = 0.011 at depths [-tsdf_threshold, +tsdf_threshold]
+            tsdf_weight = torch.exp(-4.5 * torch.pow(signed_distance, 2))
 
-                obs_tsdf_weight = confidence_map[tsdf_uv[1, :], tsdf_uv[0, :]] * tsdf_weight
-                obs_tsdf_weight[~np.isfinite(obs_tsdf_weight)] = 0
+            obs_tsdf_weight = view_confidence * tsdf_weight
 
-                tsdf_weight_colour[:, tsdf_idxs] += np.vstack([obs_tsdf_weight * tsdf_dist,
-                                                               obs_tsdf_weight,
-                                                               obs_tsdf_weight * rgb_img[tsdf_uv[1, :], tsdf_uv[0, :], :].T])
+            tsdf_mask = view_mask & (view_uv_depth > 0) & torch.isfinite(obs_tsdf_weight)
+            obs_tsdf_weight[~tsdf_mask] = 0
+            signed_distance[~tsdf_mask] = 0
+
+            tsdf_weight_colour[:, :] += torch.sum(torch.concat([(obs_tsdf_weight * signed_distance)[:, None, :],
+                                                                obs_tsdf_weight[:, None, :],
+                                                                obs_tsdf_weight[:, None, :] * view_rgb[None, :, :]], dim=1), dim=0)
         else:
+            # TODO: port to PyTorch
             view_tsdf_weight = np.zeros((len(view_idxs),), dtype=np.float32)
 
             view_obs = []
@@ -782,16 +781,23 @@ if __name__ == '__main__':
         uvcs = uvs - camera_intrinsic_stepped[:2, 2:]
         xys = np.linalg.inv(camera_intrinsic_stepped[:2, :2]) @ uvcs
         xyzs = np.vstack([xys, np.ones(xys.shape[1],)])
-        frustum_sample_points = np.hstack([xyzs * z for z in frustum_sample_zs]).T
+        frustum_sample_points = np.hstack([xyzs * z for z in frustum_sample_zs])
 
-        tsdf_vox_coords_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(frustum_sample_points))
-        tsdf_vox_coords_pcd.transform(np.linalg.inv(synthetic_camera_extrinsic))
+        tsdf_vox_coords = torch.tensor(frustum_sample_points, dtype=torch.float32)
+        camera_transform = torch.tensor(np.linalg.inv(synthetic_camera_extrinsic), dtype=torch.float32)
+        tsdf_vox_coords = camera_transform[:3, :3] @ tsdf_vox_coords + camera_transform[:3, 3:]
 
         # Initialize voxel volume array for accumulating the observations (TSDF, weight, R, G, B) over each voxel
-        tsdf_weight_colour = np.zeros((5, frustum_sample_points.shape[0]), dtype=np.float32)
+        tsdf_weight_colour = torch.zeros((5, frustum_sample_points.shape[1]), dtype=torch.float32)
         # Interior values are negative, exterior values are positive
         tsdf_weight_colour[0, :] = 1e-3
         tsdf_weight_colour[1, :] = 1e-6
+
+        w, h = image_size
+        v, u = np.mgrid[0:h, 0:w]
+        uv_grid = np.stack([u, v], axis=-1)
+        xy_grid = (np.linalg.inv(camera_intrinsic[:2, :2]) @ (uv_grid - camera_intrinsic[:2, 2])[:, :, :, None])[:, :, :, 0]
+        xy1_grid = torch.tensor(np.concatenate([xy_grid, np.ones(xy_grid.shape[:2] + (1,))], axis=-1), dtype=torch.float32)
 
         for rgbd_frame_idx in depth_image_frame_idxs:
             # interframe_dissimilarities = 0.5 has been mapped from orbit arc curvature = 1.5 which represents a threshold beyond
@@ -801,40 +807,34 @@ if __name__ == '__main__':
             #frame_weight = 0.5 * (1 - scipy.special.erf((embedding_costs[ref_frame_idx, rgbd_frame_idx] - 0.25) / (0.2 / 1.5)))
             print(rgbd_frame_idx, np.round(np.rad2deg(interframe_angles[ref_frame_idx, rgbd_frame_idx]), 1), np.round(frame_weight, 3))
             if frame_weight >= 0.01:
-                rgbd_img = filtered_frame_images[rgbd_frame_idx]
-                depth_imgs = []
-                confidence_maps = []
                 with shelve.open(depth_images_input_path) as depth_images:
                     frame_depth_images = depth_images[str(rgbd_frame_idx)]
-                for depth_img, normal_img, confidence_map in frame_depth_images.values():
-                    # Depth values larger than depth_trunc are truncated to 0
-                    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(rgbd_img),
-                                                                                    o3d.geometry.Image(depth_img),
-                                                                                    depth_scale=1.0, depth_trunc=np.inf,
-                                                                                    convert_rgb_to_intensity=False)
-                    rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
-                                                                              o3d.camera.PinholeCameraIntrinsic(depth_img.shape[1],
-                                                                                                                depth_img.shape[0],
-                                                                                                                camera_intrinsic),
-                                                                              camera_extrinsics[rgbd_frame_idx])
-                    rgbd_points = np.full(depth_img.shape + (3,), fill_value=np.nan, dtype=np.float32)
-                    rgbd_points[np.isfinite(depth_img), :] = np.array(rgbd_pcd.points)
+                rgbd_img = torch.tensor(filtered_frame_images[rgbd_frame_idx], dtype=torch.float32)
+                depth_imgs = torch.zeros((len(frame_depth_images),) + image_size[::-1], dtype=torch.float32)
+                confidence_maps = torch.zeros((len(frame_depth_images),) + image_size[::-1], dtype=torch.float32)
+                for depth_frame_idx, (depth_img, normal_img, confidence_map) in enumerate(frame_depth_images.values()):
+                    xyz_grid = xy1_grid * torch.tensor(depth_img[:, :, None], dtype=torch.float32)
 
-                    rgbd_normals = (np.linalg.inv(camera_extrinsics[rgbd_frame_idx])[:3, :3] @ normal_img[:, :, :, None])[:, :, :, 0]
+                    inv_camera_extrinsic = torch.tensor(np.linalg.inv(camera_extrinsics[rgbd_frame_idx]), dtype=torch.float32)
+                    R = inv_camera_extrinsic[:3, :3]
+                    t = inv_camera_extrinsic[:3, 3]
+                    rgbd_points = (R @ xyz_grid[:, :, :, None])[:, :, :, 0] + t
+                    rgbd_normals = (R @ torch.tensor(normal_img[:, :, :, None], dtype=torch.float32))[:, :, :, 0]
 
-                    ref_camera_origin = np.linalg.inv(synthetic_camera_extrinsic)[:3, 3]
+                    ref_camera_origin = torch.tensor(np.linalg.inv(synthetic_camera_extrinsic)[:3, 3], dtype=torch.float32)
                     ref_camera_rays = rgbd_points - ref_camera_origin
-                    ref_camera_rays = ref_camera_rays / np.clip(np.linalg.norm(ref_camera_rays, axis=-1), 1e-6, np.inf)[:, :, None]
+                    ref_camera_rays = ref_camera_rays / torch.clamp(torch.norm(ref_camera_rays, dim=-1), 1e-6, np.inf)[:, :, None]
 
                     if True:
-                        ray_normal_angles = np.arccos(np.clip(np.sum(-rgbd_normals * ref_camera_rays, axis=-1), -1, 1))
+                        ray_normal_angles = torch.arccos(torch.clamp(torch.sum(-rgbd_normals * ref_camera_rays, dim=-1), -1, 1))
 
-                        ray_normal_weight = 0.5 * (1 - scipy.special.erf((ray_normal_angles - 8 / 12 * np.pi) / (np.pi / 12)))
+                        ray_normal_weight = 0.5 * (1 - torch.special.erf((ray_normal_angles - 8 / 12 * torch.pi) / (torch.pi / 12)))
 
-                        depth_imgs.append(np.nan_to_num(depth_img, nan=0))
-                        confidence_maps.append(confidence_map * frame_weight * ray_normal_weight)
+                        depth_imgs[depth_frame_idx, :, :] = torch.tensor(depth_img, dtype=torch.float32)
+                        confidence_maps[depth_frame_idx, :, :] = torch.tensor(confidence_map * frame_weight, dtype=torch.float32) * ray_normal_weight
 
                     else:
+                        # TODO: port to PyTorch
                         normal_ray_alignment = np.sum(ref_camera_rays * rgbd_normals, axis=-1)
                         camera_ray_to_object_plane = ref_camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)[:, :, None]
                         camera_ray_to_image_plane = ref_camera_rays * -rgbd_normals[:, :, 2:] / ref_camera_rays[:, :, 2:]
@@ -850,13 +850,13 @@ if __name__ == '__main__':
                         depth_imgs.append(np.nan_to_num(depth_img, nan=0))
                         confidence_maps.append(confidence_map * frame_weight * perspective_distortion_scores)
 
-                depth_imgs = np.array(depth_imgs)
-                confidence_maps = np.array(confidence_maps)
-
                 # Integrate observations into voxel volume
-                integrate_tsdf_rgbd(tsdf_vox_coords_pcd, tsdf_weight_colour, tsdf_threshold,
-                                    np.array(rgbd_img, dtype=np.float32), depth_imgs, confidence_maps,
-                                    camera_intrinsic, camera_extrinsics[rgbd_frame_idx])
+                integrate_tsdf_rgbd(tsdf_vox_coords, tsdf_weight_colour, tsdf_threshold,
+                                    rgbd_img, depth_imgs, confidence_maps,
+                                    torch.tensor(camera_intrinsic, dtype=torch.float32),
+                                    torch.tensor(camera_extrinsics[rgbd_frame_idx], dtype=torch.float32))
+
+        tsdf_weight_colour = tsdf_weight_colour.numpy(force=True)
 
         depth_kernels = []
         depth_img = []

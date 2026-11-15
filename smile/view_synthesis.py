@@ -301,7 +301,7 @@ if __name__ == '__main__':
         yg, xg = np.mgrid[0:h, 0:w].reshape((2, -1)).astype(int)
         uvg = np.vstack([xg, yg]) - camera_intrinsic[:2, 2:]
         xyg = np.linalg.inv(camera_intrinsic[:2, :2]) @ uvg
-        xy1g = np.vstack([xyg, np.ones(xyg.shape[1],)])
+        xy1g = np.vstack([xyg, np.ones((xyg.shape[1],))])
         return xy1g * depth_predictions, xy1g, xg, yg, depth_img, normal_coincidence_img
 
     # Compute the projection errors between camera frames and their associated canvas meshes to serve as a cost
