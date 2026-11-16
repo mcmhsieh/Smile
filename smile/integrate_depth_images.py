@@ -546,7 +546,7 @@ if __name__ == '__main__':
 
     # %%
 
-    # TODO: Consider if other optimisation options might be better e.g. CuPy, JAX, PyCUDA, Numba. An example approach to consider:
+    # TODO: Consider if other acceleration options might be better e.g. CuPy, JAX, PyCUDA, Numba. An example approach to consider:
     #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/fusion.py
     #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/demo.py
 
@@ -980,52 +980,68 @@ if __name__ == '__main__':
 
     plt.close('Optimised integrated weighted depth')
 
+    depth_img_shape = set(depth_img.shape for _, _, _, _, depth_img in integrated_weighted_depth_kernels)
+    assert len(depth_img_shape) == 1
+    depth_img_shape = depth_img_shape.pop()
+    max_depth_kernels = max(len(depth_kernels) for _, _, depth_kernels, _, _ in integrated_weighted_depth_kernels)
+
+    model_base_depth = torch.tensor(0, dtype=torch.float32, requires_grad=True)
+    model_depth = torch.zeros(depth_img_shape, dtype=torch.float32, requires_grad=True)
+
+    depth_kernel_uv = torch.zeros((max_depth_kernels, 2), dtype=torch.int32)
+    depth_kernel_zw = torch.zeros((max_depth_kernels, 2), dtype=torch.float32)
+
+    gamma_softplus_alpha = torch.tensor(2, dtype=torch.float32)
+
+    def loss_fn(model_base_depth, model_depth, temperature, gravity):
+        depth_samples = model_base_depth + model_depth[depth_kernel_uv[:, 1], depth_kernel_uv[:, 0]]
+
+        depth_err = depth_samples - depth_kernel_zw[:, 0]
+
+        threshold = 3.0 * (1 - temperature) + 30.0 * temperature
+        depth_err_losses = gamma_softplus(depth_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
+        #depth_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(depth_err * 3.0 / threshold, 2))
+
+        #grad_ud = torch.abs(model_depth[:-1, :] - model_depth[1:, :])
+        #grad_lr = torch.abs(model_depth[:, :-1] - model_depth[:, 1:])
+        grad_ud = torch.pow(model_depth[:-1, :] - model_depth[1:, :], 2)
+        grad_lr = torch.pow(model_depth[:, :-1] - model_depth[:, 1:], 2)
+        # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
+        grad_ud = torch.nn.functional.pad(grad_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(grad_ud, (0, 0, 1, 0))
+        grad_lr = torch.nn.functional.pad(grad_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(grad_lr, (1, 0, 0, 0))
+
+        return (torch.sum(depth_err_losses * depth_kernel_zw[:, 1]) / torch.sum(depth_kernel_zw[:, 1])
+                + 0.2 * torch.mean(grad_ud + grad_lr)
+                - gravity * (model_base_depth + torch.mean(model_depth)))
+
+    graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn, sample_args=(model_base_depth, model_depth,
+                                                                              torch.tensor(0, dtype=torch.float32),
+                                                                              torch.tensor(0, dtype=torch.float32)))
+
     model_depth_images = []
 
     for ref_frame_idx, (synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img) in enumerate(integrated_weighted_depth_kernels):
         print('Optimising integrated weighted depth ref_frame_idx', ref_frame_idx)
 
         model_base_depth = torch.tensor(0, dtype=torch.float32, requires_grad=True)
-        #model_depth = torch.tensor(np.nan_to_num(depth_img, nan=np.max(frustum_sample_zs)), dtype=torch.float32, requires_grad=True)
         model_depth = torch.tensor(np.full(depth_img.shape, fill_value=np.mean(frustum_sample_zs)), dtype=torch.float32, requires_grad=True)
 
-        depth_kernel_uv = torch.tensor(np.array(depth_kernels)[:, :2], dtype=torch.int32)
-        depth_kernel_zw = torch.tensor(np.array(depth_kernels)[:, 2:], dtype=torch.float32)
-
-        gamma_softplus_alpha = torch.tensor(2, dtype=torch.float32)
-
-        def loss_fn(temperature, gravity):
-            depth_samples = model_base_depth + model_depth[depth_kernel_uv[:, 1], depth_kernel_uv[:, 0]]
-
-            depth_err = depth_samples - depth_kernel_zw[:, 0]
-
-            threshold = 3.0 * (1 - temperature) + 30.0 * temperature
-            depth_err_losses = gamma_softplus(depth_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
-            #depth_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(depth_err * 3.0 / threshold, 2))
-
-            #grad_ud = torch.abs(model_depth[:-1, :] - model_depth[1:, :])
-            #grad_lr = torch.abs(model_depth[:, :-1] - model_depth[:, 1:])
-            grad_ud = torch.pow(model_depth[:-1, :] - model_depth[1:, :], 2)
-            grad_lr = torch.pow(model_depth[:, :-1] - model_depth[:, 1:], 2)
-            # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
-            grad_ud = torch.nn.functional.pad(grad_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(grad_ud, (0, 0, 1, 0))
-            grad_lr = torch.nn.functional.pad(grad_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(grad_lr, (1, 0, 0, 0))
-
-            return (torch.sum(depth_err_losses * depth_kernel_zw[:, 1]) / torch.sum(depth_kernel_zw[:, 1])
-                    + 0.2 * torch.mean(grad_ud + grad_lr)
-                    - gravity * (model_base_depth + torch.mean(model_depth)))
+        depth_kernel_uv[:len(depth_kernels), :] = torch.tensor(np.array(depth_kernels)[:, :2], dtype=torch.int32)
+        depth_kernel_zw[:len(depth_kernels), :] = torch.tensor(np.array(depth_kernels)[:, 2:], dtype=torch.float32)
+        depth_kernel_zw[len(depth_kernels):, :] = 0
 
         lr = 0.005
         num_steps = 3000
         convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-        optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr)
+        optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr, fused=True)
         lr_lambda = lambda epoch: np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
         losses = []
         for optim_step in range(num_steps):
             optimiser.zero_grad()
             temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-            loss = loss_fn(temperature, 0)
+            loss = graphed_loss_fn(model_base_depth, model_depth,
+                                   torch.tensor(temperature, dtype=torch.float32), torch.tensor(0, dtype=torch.float32))
             loss.backward()
             optimiser.step()
             scheduler.step()
@@ -1065,10 +1081,11 @@ if __name__ == '__main__':
         lr = 0.005
         num_steps = 300
         gravity = 5e-3
-        optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr)
+        optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr, fused=True)
         for optim_step in range(num_steps):
             optimiser.zero_grad()
-            loss = loss_fn(0, gravity)
+            loss = graphed_loss_fn(model_base_depth, model_depth,
+                                   torch.tensor(0, dtype=torch.float32), torch.tensor(gravity, dtype=torch.float32))
             loss.backward()
             optimiser.step()
 
