@@ -597,74 +597,199 @@ if __name__ == '__main__':
 
     # %%
 
-    frame_projected_points = []
-    for ref_frame_idx in range(len(key_frame_indices)):
-        print('Computing integration rays ref_frame_idx', ref_frame_idx)
+    if False:
+        frame_projected_points = []
+        for ref_frame_idx in range(len(key_frame_indices)):
+            print('Computing integration rays ref_frame_idx', ref_frame_idx)
 
-        octree_pcd = o3d.geometry.PointCloud(combined_rgbd_pcd)
-        octree_pcd.transform(synthetic_camera_extrinsics[ref_frame_idx])
+            octree_pcd = o3d.geometry.PointCloud(combined_rgbd_pcd)
+            octree_pcd.transform(synthetic_camera_extrinsics[ref_frame_idx])
 
-        octree_xyz = np.array(octree_pcd.points, dtype=np.float32) / 30
-        octree_xyz[:, :2] /= octree_xyz[:, 2:]
+            octree_xyz = np.array(octree_pcd.points, dtype=np.float32) / 30
+            octree_xyz[:, :2] /= octree_xyz[:, 2:]
 
-        bounding_box = o3d.geometry.AxisAlignedBoundingBox([-2, -2, 0], [2, 2, 2])
-        octree_xyz[np.any(octree_xyz <= bounding_box.min_bound, axis=1), :] = np.nan
-        octree_xyz[np.any(octree_xyz >= bounding_box.max_bound, axis=1), :] = np.nan
+            bounding_box = o3d.geometry.AxisAlignedBoundingBox([-2, -2, 0], [2, 2, 2])
+            octree_xyz[np.any(octree_xyz <= bounding_box.min_bound, axis=1), :] = np.nan
+            octree_xyz[np.any(octree_xyz >= bounding_box.max_bound, axis=1), :] = np.nan
 
-        octree_pcd.points = o3d.utility.Vector3dVector(octree_xyz)
-        octree_pcd.remove_non_finite_points()
+            octree_pcd.points = o3d.utility.Vector3dVector(octree_xyz)
+            octree_pcd.remove_non_finite_points()
 
-        bounding_box_pcd = o3d.geometry.PointCloud(bounding_box.get_box_points())
-        bounding_box_pcd.colors = o3d.utility.Vector3dVector(np.zeros((8, 3)))
-        octree_pcd += bounding_box_pcd
+            bounding_box_pcd = o3d.geometry.PointCloud(bounding_box.get_box_points())
+            bounding_box_pcd.colors = o3d.utility.Vector3dVector(np.zeros((8, 3)))
+            octree_pcd += bounding_box_pcd
 
-        node_confidences = np.pad(combined_rgbd_pcd_confidences[np.all(np.isfinite(octree_xyz), axis=1)], (0, 8))
-        assert len(node_confidences) == len(octree_pcd.points)
+            node_confidences = np.pad(combined_rgbd_pcd_confidences[np.all(np.isfinite(octree_xyz), axis=1)], (0, 8))
+            assert len(node_confidences) == len(octree_pcd.points)
 
-        octree = o3d.geometry.Octree(max_depth=6)
-        octree.convert_from_point_cloud(octree_pcd, size_expand=0.0)
+            octree = o3d.geometry.Octree(max_depth=6)
+            octree.convert_from_point_cloud(octree_pcd, size_expand=0.0)
 
-        #visualise_geometries([octree])
+            #visualise_geometries([octree])
 
-        node_sum_confidences = []
-        def traverse_fn(node, node_info):
-            assert isinstance(node, (o3d.geometry.OctreeInternalPointNode, o3d.geometry.OctreePointColorLeafNode))
+            node_sum_confidences = []
+            def traverse_fn(node, node_info):
+                assert isinstance(node, (o3d.geometry.OctreeInternalPointNode, o3d.geometry.OctreePointColorLeafNode))
 
-            if isinstance(node, o3d.geometry.OctreePointColorLeafNode):
-                assert node_info.depth == octree.max_depth
-                node_sum_confidences.append((np.sum(node_confidences[node.indices]), node_info.origin[:2], node.color))
+                if isinstance(node, o3d.geometry.OctreePointColorLeafNode):
+                    assert node_info.depth == octree.max_depth
+                    node_sum_confidences.append((np.sum(node_confidences[node.indices]), node_info.origin[:2] + node_info.size / 2, node.color))
 
-            return False
+                return False
 
-        octree.traverse(traverse_fn)
-        node_sum_confidences.sort(key=lambda item: item[0], reverse=True)
+            octree.traverse(traverse_fn)
+            node_sum_confidences.sort(key=lambda item: item[0], reverse=True)
 
-        node_sum_confidence_values = np.array([node_sum_confidence for node_sum_confidence, xy, colour in node_sum_confidences])
-        node_sum_confidence_threshold = np.mean(node_sum_confidence_values[node_sum_confidence_values >= 5]) / 2
-        print('node_sum_confidence_threshold', node_sum_confidence_threshold)
+            node_sum_confidence_values = np.array([node_sum_confidence for node_sum_confidence, xy, colour in node_sum_confidences])
+            node_sum_confidence_threshold = np.mean(node_sum_confidence_values[node_sum_confidence_values >= 5]) / 2
+            print('node_sum_confidence_threshold', node_sum_confidence_threshold)
 
-        peak_node_sum_confidences = {}
-        for node_sum_confidence, xy, colour in node_sum_confidences:
-            if node_sum_confidence < node_sum_confidence_threshold:
-                break
-            xy_key = tuple(xy)
-            if xy_key not in peak_node_sum_confidences:
-                peak_node_sum_confidences[xy_key] = (node_sum_confidence, colour)
+            peak_node_sum_confidences = {}
+            for node_sum_confidence, xy, colour in node_sum_confidences:
+                if node_sum_confidence < node_sum_confidence_threshold:
+                    break
+                xy_key = tuple(xy)
+                if xy_key not in peak_node_sum_confidences:
+                    peak_node_sum_confidences[xy_key] = (node_sum_confidence, colour)
 
-        projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_node_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
-        frame_projected_points.append(projected_points)
+            projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_node_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
+            frame_projected_points.append(projected_points)
 
-        projected_points_sizes = [node_sum_confidence for node_sum_confidence, colour in peak_node_sum_confidences.values()]
-        projected_points_colours = [colour for node_sum_confidence, colour in peak_node_sum_confidences.values()]
+            projected_points_sizes = [node_sum_confidence for node_sum_confidence, colour in peak_node_sum_confidences.values()]
+            projected_points_colours = [colour for node_sum_confidence, colour in peak_node_sum_confidences.values()]
 
-        plt.figure('Projected point confidences', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle(f'frame idx: {ref_frame_idx}')
-        plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
-        plt.ylim(plt.ylim()[::-1])
-        plt.axis('equal')
-        plt.tight_layout()
-        stash_fig_page()
+            plt.figure('Projected point confidences', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'frame idx: {ref_frame_idx}')
+            plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+            plt.ylim(plt.ylim()[::-1])
+            plt.axis('equal')
+            plt.tight_layout()
+            stash_fig_page()
+
+    elif False:
+        combined_rgbd_pcd_points = np.array(combined_rgbd_pcd.points)
+        combined_rgbd_pcd_colors = np.array(combined_rgbd_pcd.colors)
+
+        frame_projected_points = []
+        for ref_frame_idx in range(len(key_frame_indices)):
+            print('Computing integration rays ref_frame_idx', ref_frame_idx)
+
+            camera_transform = synthetic_camera_extrinsics[ref_frame_idx]
+            pcd_points = camera_transform[:3, :3] @ combined_rgbd_pcd_points.T + camera_transform[:3, 3:]
+
+            scaled_xyz = pcd_points.T / 30
+            scaled_xyz[:, :2] /= scaled_xyz[:, 2:]
+
+            voxel_size = 4 / 64
+            voxel_origin = np.array([-2, -2, 0])
+
+            voxel_indices = np.floor((scaled_xyz - voxel_origin) / voxel_size).astype(int)
+
+            unique_voxels, unique_inverse, unique_counts = np.unique(voxel_indices, axis=0, return_inverse=True, return_counts=True)
+
+            voxel_sum_confidence = np.zeros((unique_voxels.shape[0],), dtype=np.float32)
+            np.add.at(voxel_sum_confidence, unique_inverse, combined_rgbd_pcd_confidences)
+
+            voxel_sum_colour = np.zeros((unique_voxels.shape[0], 3), dtype=np.float32)
+            np.add.at(voxel_sum_colour, unique_inverse, combined_rgbd_pcd_colors)
+            voxel_mean_colour = voxel_sum_colour / unique_counts[:, None]
+
+            voxel_sum_confidence_threshold = np.mean(voxel_sum_confidence[voxel_sum_confidence >= 5]) / 2
+            print('voxel_sum_confidence_threshold', voxel_sum_confidence_threshold)
+
+            peak_voxel_sum_confidences = {}
+            voxel_xyz = voxel_origin + (unique_voxels + 0.5) * voxel_size
+            inlier_mask = ((voxel_xyz[:, 0] > -2) & (voxel_xyz[:, 0] < 2)
+                           & (voxel_xyz[:, 1] > -2) & (voxel_xyz[:, 1] < 2)
+                           & (voxel_xyz[:, 2] > 0) & (voxel_xyz[:, 2] < 2))
+            for idx in np.argsort(voxel_sum_confidence)[::-1]:
+                sum_confidence = voxel_sum_confidence[idx]
+                if sum_confidence < voxel_sum_confidence_threshold:
+                    break
+                xy_key = tuple(voxel_xyz[idx, :2])
+                if inlier_mask[idx] and xy_key not in peak_voxel_sum_confidences:
+                    peak_voxel_sum_confidences[xy_key] = (sum_confidence, voxel_mean_colour[idx, :])
+
+            projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_voxel_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
+            frame_projected_points.append(projected_points)
+
+            projected_points_sizes = [voxel_sum_confidence for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+            projected_points_colours = [colour for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+
+            plt.figure('Projected point confidences', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'frame idx: {ref_frame_idx}')
+            plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+            plt.ylim(plt.ylim()[::-1])
+            plt.axis('equal')
+            plt.tight_layout()
+            stash_fig_page()
+
+    else:
+        combined_rgbd_pcd_points = torch.tensor(np.array(combined_rgbd_pcd.points), dtype=torch.float32)
+        combined_rgbd_pcd_colors = torch.tensor(np.array(combined_rgbd_pcd.colors), dtype=torch.float32)
+        combined_rgbd_pcd_confidences_tensor = torch.tensor(combined_rgbd_pcd_confidences)
+
+        frame_projected_points = []
+        for ref_frame_idx in range(len(key_frame_indices)):
+            print('Computing integration rays ref_frame_idx', ref_frame_idx)
+
+            camera_transform = torch.tensor(synthetic_camera_extrinsics[ref_frame_idx], dtype=torch.float32)
+            pcd_points = camera_transform[:3, :3] @ combined_rgbd_pcd_points.T + camera_transform[:3, 3:]
+
+            scaled_xyz = pcd_points.T / 30
+            scaled_xyz[:, :2] /= scaled_xyz[:, 2:]
+
+            voxel_size = 4 / 64
+            voxel_origin = torch.tensor([-2, -2, 0], dtype=torch.float32)
+
+            voxel_indices = torch.floor((scaled_xyz - voxel_origin) / voxel_size).to(torch.int32)
+
+            unique_voxels, unique_inverse, unique_counts = torch.unique(voxel_indices, sorted=False, return_inverse=True, return_counts=True, dim=0)
+
+            voxel_sum_confidence = torch.zeros((unique_voxels.shape[0],), dtype=torch.float32)
+            voxel_sum_confidence.index_add_(dim=0, index=unique_inverse, source=combined_rgbd_pcd_confidences_tensor)
+
+            voxel_sum_colour = torch.zeros((unique_voxels.shape[0], 3), dtype=torch.float32)
+            voxel_sum_colour.index_add_(dim=0, index=unique_inverse, source=combined_rgbd_pcd_colors)
+            voxel_mean_colour = voxel_sum_colour / unique_counts[:, None]
+
+            voxel_origin = voxel_origin.numpy(force=True)
+            unique_voxels = unique_voxels.numpy(force=True)
+            voxel_sum_confidence = voxel_sum_confidence.numpy(force=True)
+            voxel_mean_colour = voxel_mean_colour.numpy(force=True)
+
+            voxel_sum_confidence_threshold = np.mean(voxel_sum_confidence[voxel_sum_confidence >= 5]) / 2
+            print('voxel_sum_confidence_threshold', voxel_sum_confidence_threshold)
+
+            peak_voxel_sum_confidences = {}
+            voxel_xyz = voxel_origin + (unique_voxels + 0.5) * voxel_size
+            inlier_mask = ((voxel_xyz[:, 0] > -2) & (voxel_xyz[:, 0] < 2)
+                           & (voxel_xyz[:, 1] > -2) & (voxel_xyz[:, 1] < 2)
+                           & (voxel_xyz[:, 2] > 0) & (voxel_xyz[:, 2] < 2))
+            for idx in np.argsort(voxel_sum_confidence)[::-1]:
+                sum_confidence = voxel_sum_confidence[idx]
+                if sum_confidence < voxel_sum_confidence_threshold:
+                    break
+                xy_key = tuple(voxel_xyz[idx, :2])
+                if inlier_mask[idx] and xy_key not in peak_voxel_sum_confidences:
+                    peak_voxel_sum_confidences[xy_key] = (sum_confidence, voxel_mean_colour[idx, :])
+
+            projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_voxel_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
+            frame_projected_points.append(projected_points)
+
+            projected_points_sizes = [voxel_sum_confidence for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+            projected_points_colours = [colour for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+
+            plt.figure('Projected point confidences', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'frame idx: {ref_frame_idx}')
+            plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+            plt.ylim(plt.ylim()[::-1])
+            plt.axis('equal')
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
