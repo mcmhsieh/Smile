@@ -546,85 +546,6 @@ if __name__ == '__main__':
 
     # %%
 
-    # TODO: Consider if other acceleration options might be better e.g. CuPy, JAX, PyCUDA, Numba. An example approach to consider:
-    #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/fusion.py
-    #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/demo.py
-
-    def integrate_tsdf_rgbd(vox_coords, tsdf_weight_colour, tsdf_threshold, rgb_img, depth_imgs, confidence_maps,
-                            camera_intrinsic, camera_extrinsic):
-        assert depth_imgs.shape == confidence_maps.shape
-        if depth_imgs.shape[0] == 0:
-            return
-
-        xyz = camera_intrinsic @ (camera_extrinsic[:3, :3] @ vox_coords + camera_extrinsic[:3, 3:])
-        xyz[:, xyz[2, :] <= 0] = torch.nan
-        uv = xyz[:2, :] / xyz[2, :]
-
-        h, w = depth_imgs.shape[1:]
-        view_mask = (uv[0, :] > -0.5) & (uv[0, :] < w - 0.5) & (uv[1, :] > -0.5) & (uv[1, :] < h - 0.5)
-
-        uv[:, ~view_mask] = 0
-        view_uv = torch.round(uv).to(torch.int32)
-        view_z = xyz[2, :]
-
-        view_uv_depth = depth_imgs[:, view_uv[1, :], view_uv[0, :]]
-        view_confidence = confidence_maps[:, view_uv[1, :], view_uv[0, :]]
-        view_rgb = rgb_img[view_uv[1, :], view_uv[0, :], :].T
-
-        if True:
-            # The TSDF signed distance value is linear with depth and ranges from [1, -1] between depths [-tsdf_threshold, +tsdf_threshold]
-            # Interior values are negative, exterior values are positive
-            signed_distance = (view_uv_depth - view_z) / tsdf_threshold
-
-            # The TSDF weight is normally distributed with tail values of torch.exp(-4.5) = 0.011 at depths [-tsdf_threshold, +tsdf_threshold]
-            tsdf_weight = torch.exp(-4.5 * torch.pow(signed_distance, 2))
-
-            obs_tsdf_weight = view_confidence * tsdf_weight
-
-            tsdf_mask = view_mask & (view_uv_depth > 0) & torch.isfinite(obs_tsdf_weight)
-            obs_tsdf_weight[~tsdf_mask] = 0
-            signed_distance[~tsdf_mask] = 0
-
-            tsdf_weight_colour[:, :] += torch.sum(torch.concat([(obs_tsdf_weight * signed_distance)[:, None, :],
-                                                                obs_tsdf_weight[:, None, :],
-                                                                obs_tsdf_weight[:, None, :] * view_rgb[None, :, :]], dim=1), dim=0)
-        else:
-            # TODO: port to PyTorch
-            view_tsdf_weight = np.zeros((len(view_idxs),), dtype=np.float32)
-
-            view_obs = []
-            for depth_img, confidence_map in zip(depth_imgs, confidence_maps):
-                view_uv_depth = depth_img[view_uv[1, :], view_uv[0, :]]
-                # Interior values are negative, exterior values are positive
-                signed_distance = (view_uv_depth - view_z) / tsdf_threshold
-
-                # The TSDF weight is normally distributed with tail values of np.exp(-2.25) = 0.11 at [-tsdf_threshold, +tsdf_threshold]
-                # Since the weights are summed and squared for each view, the weight is effectively
-                # normally distributed with tail values of np.exp(-4.5) = 0.011 at [-tsdf_threshold, +tsdf_threshold]
-                # The TSDF signed distance value is linear from [1, -1] between [-tsdf_threshold, +tsdf_threshold]
-                tsdf_mask = (np.abs(signed_distance) < 1) & (view_uv_depth > 0)
-                tsdf_uv = view_uv[:, tsdf_mask]
-                tsdf_dist = signed_distance[tsdf_mask]
-                tsdf_weight = np.exp(-2.25 * np.power(tsdf_dist, 2))
-
-                obs_tsdf_weight = confidence_map[tsdf_uv[1, :], tsdf_uv[0, :]] * tsdf_weight
-                obs_tsdf_weight[~np.isfinite(obs_tsdf_weight)] = 0
-
-                view_tsdf_weight[tsdf_mask] += obs_tsdf_weight
-
-                view_obs.append((tsdf_mask, tsdf_dist, tsdf_uv))
-
-            view_tsdf_weight = np.power(view_tsdf_weight / len(view_obs), 2)
-
-            for tsdf_mask, tsdf_dist, tsdf_uv in view_obs:
-                obs_tsdf_weight = view_tsdf_weight[tsdf_mask]
-                tsdf_idxs = view_idxs[tsdf_mask]
-                tsdf_weight_colour[:, tsdf_idxs] += np.vstack([obs_tsdf_weight * tsdf_dist,
-                                                               obs_tsdf_weight,
-                                                               obs_tsdf_weight * rgb_img[tsdf_uv[1, :], tsdf_uv[0, :], :].T])
-
-    # %%
-
     # Perspective distortion is directly associated with camera to object proximity, and is not directly connected to
     # the values of fx & fy (the pinhole camera focal lengths). However, when fx & fy have smaller values, the zoom is lower
     # and angle of view is wider, so the camera is typically positioned closer to the object,
@@ -756,6 +677,85 @@ if __name__ == '__main__':
 
     synthetic_camera_intrinsics = [camera_intrinsic_synthetic + np.pad(camera_intrinsic_centre_adjustment[:, None], ((0, 1), (2, 0)))
                                    for camera_intrinsic_centre_adjustment in 0.5 * (np.array(synthetic_image_size) - 1) - np.mean(frame_projected_point_bounds, axis=1)]
+
+    # %%
+
+    # TODO: Consider if other acceleration options might be better e.g. CuPy, JAX, PyCUDA, Numba. An example approach to consider:
+    #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/fusion.py
+    #  - https://github.com/andyzeng/tsdf-fusion-python/blob/master/demo.py
+
+    def integrate_tsdf_rgbd(vox_coords, tsdf_weight_colour, tsdf_threshold, rgb_img, depth_imgs, confidence_maps,
+                            camera_intrinsic, camera_extrinsic):
+        assert depth_imgs.shape == confidence_maps.shape
+        if depth_imgs.shape[0] == 0:
+            return
+
+        xyz = camera_intrinsic @ (camera_extrinsic[:3, :3] @ vox_coords + camera_extrinsic[:3, 3:])
+        xyz[:, xyz[2, :] <= 0] = torch.nan
+        uv = xyz[:2, :] / xyz[2, :]
+
+        h, w = depth_imgs.shape[1:]
+        view_mask = (uv[0, :] > -0.5) & (uv[0, :] < w - 0.5) & (uv[1, :] > -0.5) & (uv[1, :] < h - 0.5)
+
+        uv[:, ~view_mask] = 0
+        view_uv = torch.round(uv).to(torch.int32)
+        view_z = xyz[2, :]
+
+        view_uv_depth = depth_imgs[:, view_uv[1, :], view_uv[0, :]]
+        view_confidence = confidence_maps[:, view_uv[1, :], view_uv[0, :]]
+        view_rgb = rgb_img[view_uv[1, :], view_uv[0, :], :].T
+
+        if True:
+            # The TSDF signed distance value is linear with depth and ranges from [1, -1] between depths [-tsdf_threshold, +tsdf_threshold]
+            # Interior values are negative, exterior values are positive
+            signed_distance = (view_uv_depth - view_z) / tsdf_threshold
+
+            # The TSDF weight is normally distributed with tail values of torch.exp(-4.5) = 0.011 at depths [-tsdf_threshold, +tsdf_threshold]
+            tsdf_weight = torch.exp(-4.5 * torch.pow(signed_distance, 2))
+
+            obs_tsdf_weight = view_confidence * tsdf_weight
+
+            tsdf_mask = view_mask & (view_uv_depth > 0) & torch.isfinite(obs_tsdf_weight)
+            obs_tsdf_weight[~tsdf_mask] = 0
+            signed_distance[~tsdf_mask] = 0
+
+            tsdf_weight_colour[:, :] += torch.sum(torch.concat([(obs_tsdf_weight * signed_distance)[:, None, :],
+                                                                obs_tsdf_weight[:, None, :],
+                                                                obs_tsdf_weight[:, None, :] * view_rgb[None, :, :]], dim=1), dim=0)
+        else:
+            # TODO: port to PyTorch
+            view_tsdf_weight = np.zeros((len(view_idxs),), dtype=np.float32)
+
+            view_obs = []
+            for depth_img, confidence_map in zip(depth_imgs, confidence_maps):
+                view_uv_depth = depth_img[view_uv[1, :], view_uv[0, :]]
+                # Interior values are negative, exterior values are positive
+                signed_distance = (view_uv_depth - view_z) / tsdf_threshold
+
+                # The TSDF weight is normally distributed with tail values of np.exp(-2.25) = 0.11 at [-tsdf_threshold, +tsdf_threshold]
+                # Since the weights are summed and squared for each view, the weight is effectively
+                # normally distributed with tail values of np.exp(-4.5) = 0.011 at [-tsdf_threshold, +tsdf_threshold]
+                # The TSDF signed distance value is linear from [1, -1] between [-tsdf_threshold, +tsdf_threshold]
+                tsdf_mask = (np.abs(signed_distance) < 1) & (view_uv_depth > 0)
+                tsdf_uv = view_uv[:, tsdf_mask]
+                tsdf_dist = signed_distance[tsdf_mask]
+                tsdf_weight = np.exp(-2.25 * np.power(tsdf_dist, 2))
+
+                obs_tsdf_weight = confidence_map[tsdf_uv[1, :], tsdf_uv[0, :]] * tsdf_weight
+                obs_tsdf_weight[~np.isfinite(obs_tsdf_weight)] = 0
+
+                view_tsdf_weight[tsdf_mask] += obs_tsdf_weight
+
+                view_obs.append((tsdf_mask, tsdf_dist, tsdf_uv))
+
+            view_tsdf_weight = np.power(view_tsdf_weight / len(view_obs), 2)
+
+            for tsdf_mask, tsdf_dist, tsdf_uv in view_obs:
+                obs_tsdf_weight = view_tsdf_weight[tsdf_mask]
+                tsdf_idxs = view_idxs[tsdf_mask]
+                tsdf_weight_colour[:, tsdf_idxs] += np.vstack([obs_tsdf_weight * tsdf_dist,
+                                                               obs_tsdf_weight,
+                                                               obs_tsdf_weight * rgb_img[tsdf_uv[1, :], tsdf_uv[0, :], :].T])
 
     # %%
 
@@ -978,119 +978,140 @@ if __name__ == '__main__':
 
     # %%
 
+    # Optimise integrated weighted depths with surface gradient regularisation, batched over all frames
+
     plt.close('Optimised integrated weighted depth')
 
     depth_img_shape = set(depth_img.shape for _, _, _, _, depth_img in integrated_weighted_depth_kernels)
     assert len(depth_img_shape) == 1
     depth_img_shape = depth_img_shape.pop()
-    max_depth_kernels = max(len(depth_kernels) for _, _, depth_kernels, _, _ in integrated_weighted_depth_kernels)
 
-    model_base_depth = torch.tensor(0, dtype=torch.float32, requires_grad=True)
-    model_depth = torch.zeros(depth_img_shape, dtype=torch.float32, requires_grad=True)
+    frame_count = len(integrated_weighted_depth_kernels)
+    model_depths = torch.full((frame_count,) + depth_img_shape, fill_value=np.mean(frustum_sample_zs), dtype=torch.float32, requires_grad=True)
 
-    depth_kernel_uv = torch.zeros((max_depth_kernels, 2), dtype=torch.int32)
-    depth_kernel_zw = torch.zeros((max_depth_kernels, 2), dtype=torch.float32)
+    depth_kernel_fuv = []
+    depth_kernel_z = []
+    depth_kernel_weights = []
+    for ref_frame_idx, (synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img) in enumerate(integrated_weighted_depth_kernels):
+        depth_kernels_array = np.array(depth_kernels)
+        depth_kernel_fuv.append(np.hstack([np.full((len(depth_kernels), 1), fill_value=ref_frame_idx), depth_kernels_array[:, :2]]))
+        depth_kernel_z.append(depth_kernels_array[:, 2])
+        depth_kernel_frame_weights = depth_kernels_array[:, 3]
+        depth_kernel_weights.append(depth_kernel_frame_weights / np.sum(depth_kernel_frame_weights))
+    depth_kernel_fuv = torch.tensor(np.vstack(depth_kernel_fuv), dtype=torch.int32)
+    depth_kernel_z = torch.tensor(np.hstack(depth_kernel_z), dtype=torch.float32)
+    depth_kernel_weights = torch.tensor(np.hstack(depth_kernel_weights), dtype=torch.float32)
 
     gamma_softplus_alpha = torch.tensor(2, dtype=torch.float32)
 
-    def loss_fn(model_base_depth, model_depth, temperature, gravity):
-        depth_samples = model_base_depth + model_depth[depth_kernel_uv[:, 1], depth_kernel_uv[:, 0]]
+    laplacian_kernel = torch.tensor(cv2.Laplacian(np.pad([[1]], 1).astype(np.float32), ddepth=cv2.CV_32F, borderType=cv2.BORDER_CONSTANT), dtype=torch.float32)[None, None, :, :]
 
-        depth_err = depth_samples - depth_kernel_zw[:, 0]
+    model_spring_depths = torch.zeros((frame_count,) + depth_img_shape, dtype=torch.float32)
+
+    # If model_depths is not included as an argument then torch.cuda.make_graphed_callables(loss_fn, sample_args=...) raises
+    # ValueError: grad requires non-empty inputs.
+    # when executing the backward pass
+    def loss_fn(model_depths, temperature, spring_constant):
+        depth_samples = model_depths[depth_kernel_fuv[:, 0], depth_kernel_fuv[:, 2], depth_kernel_fuv[:, 1]]
+
+        depth_err = depth_samples - depth_kernel_z
 
         threshold = 3.0 * (1 - temperature) + 30.0 * temperature
         depth_err_losses = gamma_softplus(depth_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
         #depth_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(depth_err * 3.0 / threshold, 2))
 
-        #grad_ud = torch.abs(model_depth[:-1, :] - model_depth[1:, :])
-        #grad_lr = torch.abs(model_depth[:, :-1] - model_depth[:, 1:])
-        grad_ud = torch.pow(model_depth[:-1, :] - model_depth[1:, :], 2)
-        grad_lr = torch.pow(model_depth[:, :-1] - model_depth[:, 1:], 2)
         # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
-        grad_ud = torch.nn.functional.pad(grad_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(grad_ud, (0, 0, 1, 0))
-        grad_lr = torch.nn.functional.pad(grad_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(grad_lr, (1, 0, 0, 0))
+        # for constant padding, or to the second dimension for circular, replicate and reflection padding
+        depth_laplacian = torch.nn.functional.conv2d(torch.nn.functional.pad(model_depths, (1, 1, 1, 1), mode='replicate')[:, None, :, :],
+                                                     laplacian_kernel)
 
-        return (torch.sum(depth_err_losses * depth_kernel_zw[:, 1]) / torch.sum(depth_kernel_zw[:, 1])
-                + 0.2 * torch.mean(grad_ud + grad_lr)
-                - gravity * (model_base_depth + torch.mean(model_depth)))
+        return (torch.sum(depth_err_losses * depth_kernel_weights)
+                + 0.5 * torch.mean(torch.pow(depth_laplacian, 2)) * frame_count
+                + spring_constant * torch.mean(torch.pow(model_depths - model_spring_depths, 2)) * frame_count)
 
-    graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn, sample_args=(model_base_depth, model_depth,
-                                                                              torch.tensor(0, dtype=torch.float32),
-                                                                              torch.tensor(0, dtype=torch.float32)))
+    graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn, sample_args=(model_depths, torch.tensor(0, dtype=torch.float32), torch.tensor(0, dtype=torch.float32)))
+
+    lr = 0.005
+    num_steps = 10000
+    convergence_criterion = {'atol': 1e-4, 'window_size': 300, 'min_num_steps': 1000}
+    optimiser = torch.optim.Adam([model_depths], lr=lr, fused=True)
+    lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
+                               * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
+    losses = []
+    for optim_step in range(num_steps):
+        optimiser.zero_grad()
+        temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
+        loss = graphed_loss_fn(model_depths, torch.tensor(temperature, dtype=torch.float32), torch.tensor(0, dtype=torch.float32))
+        loss.backward()
+        optimiser.step()
+        scheduler.step()
+        losses.append(loss.numpy(force=True))
+        loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
+        if optim_step % 100 == 0:
+            print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
+                  'learning rate', np.round(scheduler.get_last_lr()[0], 6), 'temperature', np.round(temperature, 3))
+        if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['atol']:
+            break
+
+    print('len(losses)', len(losses))
+    print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
+    print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
+
+    """
+    plt.figure(figsize=(16, 10))
+    plt.suptitle('losses')
+    ax = plt.subplot(4, 1, 1)
+    plt.plot(losses)
+    ax = plt.subplot(4, 1, 2, sharex=ax)
+    plt.semilogy(losses)
+    ax = plt.subplot(4, 1, 3, sharex=ax)
+    plt.plot(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
+    ax = plt.subplot(4, 1, 4, sharex=ax)
+    plt.semilogy(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
+    plt.tight_layout()
+    """
+
+    model_depth_imgs = model_depths.numpy(force=True)
+
+    spring_displacement = 1.0
+    spring_constant = 1e-2
+
+    with torch.no_grad():
+        model_spring_depths.copy_(model_depths - spring_displacement)
+
+    lr = 0.005
+    num_steps = 10000
+    convergence_criterion = {'atol': 1e-4, 'window_size': 300, 'min_num_steps': 1000}
+    optimiser = torch.optim.Adam([model_depths], lr=lr, fused=True)
+    lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
+                               * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
+    losses = []
+    for optim_step in range(num_steps):
+        optimiser.zero_grad()
+        loss = graphed_loss_fn(model_depths, torch.tensor(0, dtype=torch.float32), torch.tensor(spring_constant, dtype=torch.float32))
+        loss.backward()
+        optimiser.step()
+        scheduler.step()
+        losses.append(loss.numpy(force=True))
+        loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
+        if optim_step % 100 == 0:
+            print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
+                  'learning rate', np.round(scheduler.get_last_lr()[0], 6))
+        if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['atol']:
+            break
+
+    print('len(losses)', len(losses))
+    print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
+    print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
+
+    model_depths_displacement = model_depth_imgs - model_depths.numpy(force=True)
 
     model_depth_images = []
-
     for ref_frame_idx, (synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img) in enumerate(integrated_weighted_depth_kernels):
-        print('Optimising integrated weighted depth ref_frame_idx', ref_frame_idx)
-
-        model_base_depth = torch.tensor(0, dtype=torch.float32, requires_grad=True)
-        model_depth = torch.tensor(np.full(depth_img.shape, fill_value=np.mean(frustum_sample_zs)), dtype=torch.float32, requires_grad=True)
-
-        depth_kernel_uv[:len(depth_kernels), :] = torch.tensor(np.array(depth_kernels)[:, :2], dtype=torch.int32)
-        depth_kernel_zw[:len(depth_kernels), :] = torch.tensor(np.array(depth_kernels)[:, 2:], dtype=torch.float32)
-        depth_kernel_zw[len(depth_kernels):, :] = 0
-
-        lr = 0.005
-        num_steps = 3000
-        convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-        optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr, fused=True)
-        lr_lambda = lambda epoch: np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
-        losses = []
-        for optim_step in range(num_steps):
-            optimiser.zero_grad()
-            temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-            loss = graphed_loss_fn(model_base_depth, model_depth,
-                                   torch.tensor(temperature, dtype=torch.float32), torch.tensor(0, dtype=torch.float32))
-            loss.backward()
-            optimiser.step()
-            scheduler.step()
-            losses.append(loss.numpy(force=True))
-            loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
-            if optim_step % 100 == 0:
-                print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
-                      'learning rate', np.round(scheduler.get_last_lr()[0], 6), 'temperature', np.round(temperature, 3))
-            if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['rtol'] * losses[-1]:
-                break
-
-        print('len(losses)', len(losses))
-        print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
-        print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
-
-        """
-        plt.figure(figsize=(16, 10))
-        plt.suptitle('losses')
-        ax = plt.subplot(4, 1, 1)
-        plt.plot(losses)
-        ax = plt.subplot(4, 1, 2, sharex=ax)
-        plt.semilogy(losses)
-        ax = plt.subplot(4, 1, 3, sharex=ax)
-        plt.plot(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
-        ax = plt.subplot(4, 1, 4, sharex=ax)
-        plt.semilogy(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
-        plt.tight_layout()
-        """
-
-        model_depth_img = model_base_depth.numpy(force=True) + model_depth.numpy(force=True)
-
-        displacement_drop = 0.5
-
-        with torch.no_grad():
-            model_base_depth += displacement_drop
-
-        lr = 0.005
-        num_steps = 300
-        gravity = 5e-3
-        optimiser = torch.optim.Adam([model_base_depth, model_depth], lr=lr, fused=True)
-        for optim_step in range(num_steps):
-            optimiser.zero_grad()
-            loss = graphed_loss_fn(model_base_depth, model_depth,
-                                   torch.tensor(0, dtype=torch.float32), torch.tensor(gravity, dtype=torch.float32))
-            loss.backward()
-            optimiser.step()
-
-        model_depth_displacement = model_base_depth.numpy(force=True) + model_depth.numpy(force=True) - model_depth_img
-        model_depth_confidence = np.clip(1 - model_depth_displacement / displacement_drop, 0, 1)
+        model_depth_img = model_depth_imgs[ref_frame_idx, :, :]
+        model_depth_confidence = np.clip(1 - model_depths_displacement[ref_frame_idx, :, :] / spring_displacement, 0, 1)
 
         model_depth_images.append((model_depth_img, model_depth_confidence))
 
