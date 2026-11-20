@@ -2093,12 +2093,113 @@ if __name__ == '__main__':
 
     # %%
 
-    # TODO: only map & optimise the set of coherent secondary frames
-
     plt.close('Loss components')
     plt.close('Grayscale intensity optimisation')
     plt.close('Optimised mapping')
     plt.close('Optimised synthetic view')
+
+    # TODO: only map & optimise the set of coherent secondary frames
+
+    # Optimise the frame mapping with a regularisation loss function
+    # mapping_score_mask_threshold is the value representing the order of magnitude of the mapping score
+    # around which masking takes effect
+    mapping_score_mask_threshold = 0.01
+    log_clamp_min = 1e-4 * mapping_score_mask_threshold
+
+    mapping_scores_shape = set(mapping_scores.shape for _, _, _, _, _, _, _, _, mapping_scores, _, _, _ in primary_frame_synthesis_elements.values())
+    assert len(mapping_scores_shape) == 1
+    mapping_scores_shape = mapping_scores_shape.pop()
+    assert np.all(np.array(mapping_scores_shape[1:]) % 4 == 0)
+    down_mapping_scores_shape = mapping_scores_shape[:1] + tuple(np.array(mapping_scores_shape[1:]) // 4)
+
+    model_mapping_scores = torch.zeros(down_mapping_scores_shape, dtype=torch.float32)
+    model_max_mapping_scores = torch.zeros(down_mapping_scores_shape[1:], dtype=torch.float32)
+    model_mapping_scores_mask = torch.ones(down_mapping_scores_shape[1:], dtype=torch.float32)
+    model_frames = torch.zeros(down_mapping_scores_shape, dtype=torch.float32, requires_grad=True)
+    # TODO: only map & optimise the set of coherent secondary frames, which would make the application of np.nan_to_num() redundant
+    # Raise the interframe cost floor to apply a minimum base value for any junction/interface between frames
+    model_interframe_costs = torch.tensor(np.maximum(interframe_costs, 0.1) * (1 - np.identity(len(np.diag(interframe_costs)))), dtype=torch.float32)
+
+    def frame_loss_fn(model_frames):
+        prob_model_frames = torch.nn.functional.softmax(model_frames, dim=0)
+        loss_components = {}
+
+        #loss_components['mapping cost'] = 10 * (model_max_mapping_scores - torch.sum(prob_model_frames * model_mapping_scores, dim=0))
+        #loss_components['mapping cost'] = 1 - torch.sum(prob_model_frames * model_mapping_scores, dim=0) / torch.clamp(model_max_mapping_scores, min=log_clamp_min)
+        #loss_components['mapping cost'] = model_max_mapping_scores / torch.clamp(torch.sum(prob_model_frames * model_mapping_scores, dim=0), min=log_clamp_min)
+        #loss_components['mapping cost'] = torch.pow(torch.log(torch.clamp(torch.sum(prob_model_frames * model_mapping_scores, dim=0), min=log_clamp_min)) - torch.log(torch.clamp(model_max_mapping_scores, min=log_clamp_min)), 2)
+        loss_components['mapping cost'] = torch.log(torch.clamp(model_max_mapping_scores, min=log_clamp_min)) - torch.log(torch.clamp(torch.sum(prob_model_frames * model_mapping_scores, dim=0), min=log_clamp_min))
+
+        prob_interframe_costs = torch.einsum('ij,jab->iab', model_interframe_costs, prob_model_frames)
+        dist_ud = (torch.sum(prob_model_frames[:, :-1, :] * prob_interframe_costs[:, 1:, :], dim=0)
+                   * (model_mapping_scores_mask[:-1, :] + model_mapping_scores_mask[1:, :]))
+        dist_lr = (torch.sum(prob_model_frames[:, :, :-1] * prob_interframe_costs[:, :, 1:], dim=0)
+                   * (model_mapping_scores_mask[:, :-1] + model_mapping_scores_mask[:, 1:]))
+        dist_uldr = (torch.sum(prob_model_frames[:, :-1, :-1] * prob_interframe_costs[:, 1:, 1:], dim=0)
+                     * (model_mapping_scores_mask[:-1, :-1] + model_mapping_scores_mask[1:, 1:]))
+        dist_urdl = (torch.sum(prob_model_frames[:, 1:, :-1] * prob_interframe_costs[:, :-1, 1:], dim=0)
+                     * (model_mapping_scores_mask[1:, :-1] + model_mapping_scores_mask[:-1, 1:]))
+        # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
+        dist_ud = torch.nn.functional.pad(dist_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(dist_ud, (0, 0, 1, 0))
+        dist_lr = torch.nn.functional.pad(dist_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(dist_lr, (1, 0, 0, 0))
+        dist_uldr = torch.nn.functional.pad(dist_uldr, (0, 1, 0, 1)) + torch.nn.functional.pad(dist_uldr, (1, 0, 1, 0))
+        dist_urdl = torch.nn.functional.pad(dist_urdl, (1, 0, 0, 1)) + torch.nn.functional.pad(dist_urdl, (0, 1, 1, 0))
+        loss_components['interframe cost'] = 0.1 * (dist_ud + dist_lr + dist_uldr + dist_urdl)
+
+        """
+        # The diagonal terms help to balance the loss for all border directions between frame mapping transitions.
+        # Without the diagonal terms, the loss for horizontal and vertical borders is less than the loss for diagonals,
+        # so borders tend to align horizontally or vertically.
+        if False:
+            # The L2 norm loss may be too much at odds with transitioning quickly between one-hot frame map vectors.
+            # It appears to result in thin strips stacked with the thinner dimension in the direction of camera motion
+            # for some regions of the map, particularly around the centre.
+            grad_ud = (torch.sum(torch.pow(prob_model_frames[:, :-1, :] - prob_model_frames[:, 1:, :], 2), dim=0)
+                       * (model_mapping_scores_mask[:-1, :] + model_mapping_scores_mask[1:, :]))
+            grad_lr = (torch.sum(torch.pow(prob_model_frames[:, :, :-1] - prob_model_frames[:, :, 1:], 2), dim=0)
+                       * (model_mapping_scores_mask[:, :-1] + model_mapping_scores_mask[:, 1:]))
+            grad_uldr = (torch.sum(torch.pow(prob_model_frames[:, :-1, :-1] - prob_model_frames[:, 1:, 1:], 2), dim=0)
+                         * (model_mapping_scores_mask[:-1, :-1] + model_mapping_scores_mask[1:, 1:]))
+            grad_urdl = (torch.sum(torch.pow(prob_model_frames[:, 1:, :-1] - prob_model_frames[:, :-1, 1:], 2), dim=0)
+                         * (model_mapping_scores_mask[1:, :-1] + model_mapping_scores_mask[:-1, 1:]))
+        else:
+            grad_ud = (torch.sum(torch.abs(prob_model_frames[:, :-1, :] - prob_model_frames[:, 1:, :]), dim=0)
+                       * (model_mapping_scores_mask[:-1, :] + model_mapping_scores_mask[1:, :]))
+            grad_lr = (torch.sum(torch.abs(prob_model_frames[:, :, :-1] - prob_model_frames[:, :, 1:]), dim=0)
+                       * (model_mapping_scores_mask[:, :-1] + model_mapping_scores_mask[:, 1:]))
+            grad_uldr = (torch.sum(torch.abs(prob_model_frames[:, :-1, :-1] - prob_model_frames[:, 1:, 1:]), dim=0)
+                         * (model_mapping_scores_mask[:-1, :-1] + model_mapping_scores_mask[1:, 1:]))
+            grad_urdl = (torch.sum(torch.abs(prob_model_frames[:, 1:, :-1] - prob_model_frames[:, :-1, 1:]), dim=0)
+                         * (model_mapping_scores_mask[1:, :-1] + model_mapping_scores_mask[:-1, 1:]))
+        # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
+        grad_ud = torch.nn.functional.pad(grad_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(grad_ud, (0, 0, 1, 0))
+        grad_lr = torch.nn.functional.pad(grad_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(grad_lr, (1, 0, 0, 0))
+        grad_uldr = torch.nn.functional.pad(grad_uldr, (0, 1, 0, 1)) + torch.nn.functional.pad(grad_uldr, (1, 0, 1, 0))
+        grad_urdl = torch.nn.functional.pad(grad_urdl, (1, 0, 0, 1)) + torch.nn.functional.pad(grad_urdl, (0, 1, 1, 0))
+        loss_components['gradient'] = 0.05 * (grad_ud + grad_lr + grad_uldr + grad_urdl)
+        """
+
+        #prob_model_frames_neighbourhood_mean = torch.nn.functional.conv2d(prob_model_frames[:, None, :, :],
+        #                                                                  torch.ones((1, 1, 2, 2), dtype=torch.float32),
+        #                                                                  padding='valid')[:, 0, :, :] / 4
+        prob_model_frames_neighbourhood_mean = (prob_model_frames[:, :-1, :-1] + prob_model_frames[:, :-1, 1:]
+                                                + prob_model_frames[:, 1:, :-1] + prob_model_frames[:, 1:, 1:]) / 4
+        prob_model_frames_neighbourhood_norm_var = (torch.sum(torch.pow(prob_model_frames[:, :-1, :-1] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[:-1, :-1]
+                                                    + torch.sum(torch.pow(prob_model_frames[:, :-1, 1:] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[:-1, 1:]
+                                                    + torch.sum(torch.pow(prob_model_frames[:, 1:, :-1] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[1:, :-1]
+                                                    + torch.sum(torch.pow(prob_model_frames[:, 1:, 1:] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[1:, 1:]) / 4
+        loss_components['variance'] = 0.2 * prob_model_frames_neighbourhood_norm_var
+
+        #loss_components['entropy'] = 0.1 * -torch.log(torch.clamp(torch.var(prob_model_frames, dim=0) * prob_model_frames.shape[0] * model_mapping_scores_mask, min=log_clamp_min))
+        # Divide by np.log(prob_model_frames.shape[0]) to calculate the entropy relative to that of a uniform distribution
+        #loss_components['entropy'] = 1.0 * -torch.sum(torch.log(torch.clamp(prob_model_frames, min=log_clamp_min)) * prob_model_frames, dim=0) / np.log(prob_model_frames.shape[0]) * model_mapping_scores_mask
+        loss_components['entropy'] = 1.0 * torch.pow(torch.sum(torch.log(torch.clamp(prob_model_frames, min=log_clamp_min)) * prob_model_frames, dim=0) / np.log(prob_model_frames.shape[0]), 2) * model_mapping_scores_mask
+
+        #loss_components['information'] = 1e-3 * torch.log(1 + 10 * torch.sum(prob_model_frames, dim=(1, 2)))
+
+        return sum(torch.mean(loss_component) for loss_component in loss_components.values()), loss_components
+
+    graphed_frame_loss_fn = torch.cuda.make_graphed_callables(frame_loss_fn, sample_args=(model_frames,))
 
     for primary_frame_idx in primary_frame_synthesis_elements:
 
@@ -2108,11 +2209,6 @@ if __name__ == '__main__':
          synthetic_camera_extrinsic, synthetic_camera_intrinsic,
          mapping_scores, xyzfg, xfg, yfg) = primary_frame_synthesis_elements[primary_frame_idx]
 
-        # Optimise the frame mapping with a regularisation loss function
-        # mapping_score_mask_threshold is the value representing the order of magnitude of the mapping score
-        # around which masking takes effect
-        mapping_score_mask_threshold = 0.01
-        log_clamp_min = 1e-4 * mapping_score_mask_threshold
         down_mapping_scores = []
         for mapping_score in mapping_scores:
             filtered_mapping_score = np.array(mapping_score)
@@ -2127,98 +2223,17 @@ if __name__ == '__main__':
             down_mapping_scores.append(cv2.resize(filtered_mapping_score, (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_LINEAR))
         down_mapping_scores = np.stack(down_mapping_scores)
 
-        model_mapping_scores = torch.tensor(down_mapping_scores, dtype=torch.float32)
-        model_max_mapping_scores = torch.max(model_mapping_scores, dim=0).values
-        model_mapping_scores_mask = torch.clamp(model_max_mapping_scores / mapping_score_mask_threshold, min=log_clamp_min, max=1.0)
-        model_frames = torch.tensor(np.identity(down_mapping_scores.shape[0])[primary_frame_idx, :][:, None, None] * np.ones(down_mapping_scores.shape[1:]),
-                                    dtype=torch.float32, requires_grad=True)
-        # TODO: only map & optimise the set of coherent secondary frames, which would make the application of np.nan_to_num() redundant
-        # Raise the interframe cost floor to apply a minimum base value for any junction/interface between frames
-        model_interframe_costs = torch.tensor(np.maximum(interframe_costs, 0.1) * (1 - np.identity(len(np.diag(interframe_costs)))), dtype=torch.float32)
-
-        def loss_fn():
-            prob_model_frames = torch.nn.functional.softmax(model_frames, dim=0)
-            loss_components = {}
-
-            #loss_components['mapping cost'] = 10 * (model_max_mapping_scores - torch.sum(prob_model_frames * model_mapping_scores, dim=0))
-            #loss_components['mapping cost'] = 1 - torch.sum(prob_model_frames * model_mapping_scores, dim=0) / torch.clamp(model_max_mapping_scores, min=log_clamp_min)
-            #loss_components['mapping cost'] = model_max_mapping_scores / torch.clamp(torch.sum(prob_model_frames * model_mapping_scores, dim=0), min=log_clamp_min)
-            #loss_components['mapping cost'] = torch.pow(torch.log(torch.clamp(torch.sum(prob_model_frames * model_mapping_scores, dim=0), min=log_clamp_min)) - torch.log(torch.clamp(model_max_mapping_scores, min=log_clamp_min)), 2)
-            loss_components['mapping cost'] = torch.log(torch.clamp(model_max_mapping_scores, min=log_clamp_min)) - torch.log(torch.clamp(torch.sum(prob_model_frames * model_mapping_scores, dim=0), min=log_clamp_min))
-
-            prob_interframe_costs = torch.einsum('ij,jab->iab', model_interframe_costs, prob_model_frames)
-            dist_ud = (torch.sum(prob_model_frames[:, :-1, :] * prob_interframe_costs[:, 1:, :], dim=0)
-                       * (model_mapping_scores_mask[:-1, :] + model_mapping_scores_mask[1:, :]))
-            dist_lr = (torch.sum(prob_model_frames[:, :, :-1] * prob_interframe_costs[:, :, 1:], dim=0)
-                       * (model_mapping_scores_mask[:, :-1] + model_mapping_scores_mask[:, 1:]))
-            dist_uldr = (torch.sum(prob_model_frames[:, :-1, :-1] * prob_interframe_costs[:, 1:, 1:], dim=0)
-                         * (model_mapping_scores_mask[:-1, :-1] + model_mapping_scores_mask[1:, 1:]))
-            dist_urdl = (torch.sum(prob_model_frames[:, 1:, :-1] * prob_interframe_costs[:, :-1, 1:], dim=0)
-                         * (model_mapping_scores_mask[1:, :-1] + model_mapping_scores_mask[:-1, 1:]))
-            # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
-            dist_ud = torch.nn.functional.pad(dist_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(dist_ud, (0, 0, 1, 0))
-            dist_lr = torch.nn.functional.pad(dist_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(dist_lr, (1, 0, 0, 0))
-            dist_uldr = torch.nn.functional.pad(dist_uldr, (0, 1, 0, 1)) + torch.nn.functional.pad(dist_uldr, (1, 0, 1, 0))
-            dist_urdl = torch.nn.functional.pad(dist_urdl, (1, 0, 0, 1)) + torch.nn.functional.pad(dist_urdl, (0, 1, 1, 0))
-            loss_components['interframe cost'] = 0.1 * (dist_ud + dist_lr + dist_uldr + dist_urdl)
-
-            """
-            # The diagonal terms help to balance the loss for all border directions between frame mapping transitions.
-            # Without the diagonal terms, the loss for horizontal and vertical borders is less than the loss for diagonals,
-            # so borders tend to align horizontally or vertically.
-            if False:
-                # The L2 norm loss may be too much at odds with transitioning quickly between one-hot frame map vectors.
-                # It appears to result in thin strips stacked with the thinner dimension in the direction of camera motion
-                # for some regions of the map, particularly around the centre.
-                grad_ud = (torch.sum(torch.pow(prob_model_frames[:, :-1, :] - prob_model_frames[:, 1:, :], 2), dim=0)
-                           * (model_mapping_scores_mask[:-1, :] + model_mapping_scores_mask[1:, :]))
-                grad_lr = (torch.sum(torch.pow(prob_model_frames[:, :, :-1] - prob_model_frames[:, :, 1:], 2), dim=0)
-                           * (model_mapping_scores_mask[:, :-1] + model_mapping_scores_mask[:, 1:]))
-                grad_uldr = (torch.sum(torch.pow(prob_model_frames[:, :-1, :-1] - prob_model_frames[:, 1:, 1:], 2), dim=0)
-                             * (model_mapping_scores_mask[:-1, :-1] + model_mapping_scores_mask[1:, 1:]))
-                grad_urdl = (torch.sum(torch.pow(prob_model_frames[:, 1:, :-1] - prob_model_frames[:, :-1, 1:], 2), dim=0)
-                             * (model_mapping_scores_mask[1:, :-1] + model_mapping_scores_mask[:-1, 1:]))
-            else:
-                grad_ud = (torch.sum(torch.abs(prob_model_frames[:, :-1, :] - prob_model_frames[:, 1:, :]), dim=0)
-                           * (model_mapping_scores_mask[:-1, :] + model_mapping_scores_mask[1:, :]))
-                grad_lr = (torch.sum(torch.abs(prob_model_frames[:, :, :-1] - prob_model_frames[:, :, 1:]), dim=0)
-                           * (model_mapping_scores_mask[:, :-1] + model_mapping_scores_mask[:, 1:]))
-                grad_uldr = (torch.sum(torch.abs(prob_model_frames[:, :-1, :-1] - prob_model_frames[:, 1:, 1:]), dim=0)
-                             * (model_mapping_scores_mask[:-1, :-1] + model_mapping_scores_mask[1:, 1:]))
-                grad_urdl = (torch.sum(torch.abs(prob_model_frames[:, 1:, :-1] - prob_model_frames[:, :-1, 1:]), dim=0)
-                             * (model_mapping_scores_mask[1:, :-1] + model_mapping_scores_mask[:-1, 1:]))
-            # torch.nn.functional.pad() pad parameter is specified as left, right pairs in from the last dimension to the first dimension
-            grad_ud = torch.nn.functional.pad(grad_ud, (0, 0, 0, 1)) + torch.nn.functional.pad(grad_ud, (0, 0, 1, 0))
-            grad_lr = torch.nn.functional.pad(grad_lr, (0, 1, 0, 0)) + torch.nn.functional.pad(grad_lr, (1, 0, 0, 0))
-            grad_uldr = torch.nn.functional.pad(grad_uldr, (0, 1, 0, 1)) + torch.nn.functional.pad(grad_uldr, (1, 0, 1, 0))
-            grad_urdl = torch.nn.functional.pad(grad_urdl, (1, 0, 0, 1)) + torch.nn.functional.pad(grad_urdl, (0, 1, 1, 0))
-            loss_components['gradient'] = 0.05 * (grad_ud + grad_lr + grad_uldr + grad_urdl)
-            """
-
-            #prob_model_frames_neighbourhood_mean = torch.nn.functional.conv2d(prob_model_frames[:, None, :, :],
-            #                                                                  torch.ones((1, 1, 2, 2), dtype=torch.float32),
-            #                                                                  padding='valid')[:, 0, :, :] / 4
-            prob_model_frames_neighbourhood_mean = (prob_model_frames[:, :-1, :-1] + prob_model_frames[:, :-1, 1:]
-                                                    + prob_model_frames[:, 1:, :-1] + prob_model_frames[:, 1:, 1:]) / 4
-            prob_model_frames_neighbourhood_norm_var = (torch.sum(torch.pow(prob_model_frames[:, :-1, :-1] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[:-1, :-1]
-                                                        + torch.sum(torch.pow(prob_model_frames[:, :-1, 1:] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[:-1, 1:]
-                                                        + torch.sum(torch.pow(prob_model_frames[:, 1:, :-1] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[1:, :-1]
-                                                        + torch.sum(torch.pow(prob_model_frames[:, 1:, 1:] - prob_model_frames_neighbourhood_mean, 2), dim=0) * model_mapping_scores_mask[1:, 1:]) / 4
-            loss_components['variance'] = 0.2 * prob_model_frames_neighbourhood_norm_var
-
-            #loss_components['entropy'] = 0.1 * -torch.log(torch.clamp(torch.var(prob_model_frames, dim=0) * prob_model_frames.shape[0] * model_mapping_scores_mask, min=log_clamp_min))
-            # Divide by np.log(prob_model_frames.shape[0]) to calculate the entropy relative to that of a uniform distribution
-            #loss_components['entropy'] = 1.0 * -torch.sum(torch.log(torch.clamp(prob_model_frames, min=log_clamp_min)) * prob_model_frames, dim=0) / np.log(prob_model_frames.shape[0]) * model_mapping_scores_mask
-            loss_components['entropy'] = 1.0 * torch.pow(torch.sum(torch.log(torch.clamp(prob_model_frames, min=log_clamp_min)) * prob_model_frames, dim=0) / np.log(prob_model_frames.shape[0]), 2) * model_mapping_scores_mask
-
-            #loss_components['information'] = 1e-3 * torch.log(1 + 10 * torch.sum(prob_model_frames, dim=(1, 2)))
-
-            return sum(torch.mean(loss_component) for loss_component in loss_components.values()), loss_components
+        with torch.no_grad():
+            model_mapping_scores.copy_(torch.tensor(down_mapping_scores, dtype=torch.float32))
+            model_max_mapping_scores.copy_(torch.max(model_mapping_scores, dim=0).values)
+            model_mapping_scores_mask.copy_(torch.clamp(model_max_mapping_scores / mapping_score_mask_threshold, min=log_clamp_min, max=1.0))
+            model_frames.copy_(torch.tensor(np.identity(down_mapping_scores.shape[0])[primary_frame_idx, :][:, None, None] * np.ones(down_mapping_scores.shape[1:]),
+                                            dtype=torch.float32, requires_grad=True))
 
         lr = 0.005
         num_steps = 20000
         convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 2000}
-        optimiser = torch.optim.Adam([model_frames], lr=lr)
+        optimiser = torch.optim.Adam([model_frames], lr=lr, fused=True)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
@@ -2226,7 +2241,7 @@ if __name__ == '__main__':
         loss_components = {}
         for optim_step in range(num_steps):
             optimiser.zero_grad()
-            loss, loss_components = loss_fn()
+            loss, loss_components = graphed_frame_loss_fn(model_frames)
             loss.backward()
             optimiser.step()
             scheduler.step()
@@ -2353,7 +2368,7 @@ if __name__ == '__main__':
         untransformed_pixels = model_intersecting_frame_pixels[:, :, 1] / 255
         weighted_untransformed_pixels_mean_std = torch.std(torch.sum(model_intersecting_frame_pixel_normed_weights * untransformed_pixels, axis=-1))
 
-        def loss_fn():
+        def pixel_loss_fn(model_frame_intensity_transform_coeffs):
             transformed_pixel_deltas = torch.sum(model_intersecting_frame_pixels * model_frame_intensity_transform_coeffs, axis=-1) / 255
             transformed_pixels = untransformed_pixels + transformed_pixel_deltas
 
@@ -2383,10 +2398,12 @@ if __name__ == '__main__':
 
             return sum(pixel_loss_components.values()), pixel_loss_components, weighted_pixel_deltas, weighted_pixels_mean, weighted_pixels_var
 
+        graphed_pixel_loss_fn = torch.cuda.make_graphed_callables(pixel_loss_fn, sample_args=(model_frame_intensity_transform_coeffs,))
+
         lr = 0.005
         num_steps = 10000
         convergence_criterion = {'atol': 1e-4, 'window_size': 100, 'min_num_steps': 1000}
-        optimiser = torch.optim.Adam([model_frame_intensity_transform_coeffs], lr=lr)
+        optimiser = torch.optim.Adam([model_frame_intensity_transform_coeffs], lr=lr, fused=True)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
@@ -2395,7 +2412,7 @@ if __name__ == '__main__':
         weighted_pixel_deltas, weighted_pixels_mean, weighted_pixels_var = None, None, None
         for optim_step in range(num_steps):
             optimiser.zero_grad()
-            loss, pixel_loss_components, weighted_pixel_deltas, weighted_pixels_mean, weighted_pixels_var = loss_fn()
+            loss, pixel_loss_components, weighted_pixel_deltas, weighted_pixels_mean, weighted_pixels_var = graphed_pixel_loss_fn(model_frame_intensity_transform_coeffs)
             loss.backward()
             optimiser.step()
             scheduler.step()

@@ -796,6 +796,11 @@ if __name__ == '__main__':
     frame_projected_point_bounds = np.array([np.vstack([np.min(projected_points, axis=1), np.max(projected_points, axis=1)])
                                              for projected_points in frame_projected_points])
 
+    # Set image_size_granularity to the least common multiple of:
+    #   grid_step=8 used in TSDF integration
+    #   grid_step=5 used to compute interframe_projection_errors in view_synthesis.py
+    #   grid_step=15 used to compute interframe_canvas_projection_errors in view_synthesis.py
+    #   gray_step=2 used to optimise the grayscale intensity in view_synthesis.py
     image_size_granularity = 120
     synthetic_image_size = tuple(np.ceil(np.max(frame_projected_point_bounds[:, 1, :] - frame_projected_point_bounds[:, 0, :], axis=0) / image_size_granularity + 1).astype(int) * image_size_granularity)
     print('synthetic_image_size', synthetic_image_size)
