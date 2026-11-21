@@ -8,6 +8,7 @@ SPDX-License-Identifier: MIT
 """
 
 import sys
+import os
 import argparse
 import pathlib
 import platform
@@ -28,6 +29,15 @@ PIPELINE_SERVER_FILEPATH = __file__
 # Note that localhost is slow to resolve
 SERVER_NAME = '127.0.0.1'
 SERVER_PORT = 8081
+
+SYS_EXECUTABLE = pathlib.Path(sys.executable)
+# os.name returns which implementation of the os APIs was imported
+# sys.platform returns build time information
+# The platform module returns runtime diagnostic information intended for humans to read
+# and is currently not dependable for machine interpretation because return values may change over time.
+SYS_EXECUTABLE_NO_CONSOLE = SYS_EXECUTABLE.parent / 'pythonw.exe'
+if os.name == 'nt' and SYS_EXECUTABLE.name.lower() == 'python.exe' and SYS_EXECUTABLE_NO_CONSOLE.exists():
+    SYS_EXECUTABLE = SYS_EXECUTABLE_NO_CONSOLE
 
 class PipelineServer(http.server.HTTPServer):
     def __init__(self, *args, window=None, **kwargs):
@@ -76,7 +86,7 @@ def start_pipeline_server():
     # Create an independent / daemon process by starting a child process and exiting its parent process.
     # For some reason, creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     # still creates a child process within the process tree.
-    subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH])
+    subprocess.Popen([SYS_EXECUTABLE, PIPELINE_SERVER_FILEPATH])
     start_time = time.time()
     while True:
         try:
@@ -199,5 +209,5 @@ if __name__ == '__main__':
     else:
         # Create an independent / daemon process by starting a child process without inheriting
         # standard I/O streams and then immediately exiting this process to make it an orphan.
-        subprocess.Popen([sys.executable, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'],
+        subprocess.Popen([SYS_EXECUTABLE, PIPELINE_SERVER_FILEPATH, '--start_as_daemon'],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
