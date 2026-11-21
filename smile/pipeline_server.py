@@ -19,6 +19,7 @@ import functools
 import socket
 import http.server
 import time
+import collections
 import json
 import requests
 import tkinter as tk
@@ -116,6 +117,9 @@ class App(tk.Tk):
         self.title('Pipeline Server')
         self.geometry('500x300+100+100')
 
+        icon_data = """iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAALHRFWHRDcmVhdGlvbiBUaW1lAFNhdCAyMSBOb3YgMjAyNiAxMjowOToyNCAtMDAwMEXK5bsAAAAHdElNRQfqCxUOCDiBWRtkAAAACXBIWXMAAAsSAAALEgHS3X78AAAABGdBTUEAALGPC/xhBQAAAGxQTFRF////9/f37+/31tbWSkpKMTExe3t77+/vUlJS3t7e5+fnKSkpAAAAc3NzlJSUQkJCxsbGCAgIvb29a2trzs7OhISEISEhjIyMOTk5GBgYpaWl3t7n1tbenJycY2NjY2NrtbW1Wlpaa2tzra2teVnMigAAAAF0Uk5TAEDm2GYAAAFcSURBVHjajZPrloMgDIRrFKk6VFGk1Hbtun3/d1yUi1rPXvJDcuQDJgM5nWwkP8TJRfJL7OaJ6C1xhP/5mlhlhCJSwlRselEA3JgayGw0wFcHmDGTMA9PLN9CIy8pIVUDtbJJmUMXK0AZBrclnyBsxvVlwJkioPAMsngNZVf0yMc58UCPNMpW+Fg42aKPwKjXuqjg89DioscITGwFwlGyZ1MEnvoA0Gequ1WD5EeX7R4RGJzgfSgMEWhcvo9hUyaX4ggId65zktVHlTVbnUzGo0oux81lfaB5B5rF0QA8nK3b6LG5zYQq40TQ/e4TU9EGSITnB/iKC/jCPNDi6tbdbm6vK9odQHopSkGIxR9i4XrCo87nFdRBKXQ07xhUB6CQ1qtUZkSZTK1LsngDSOBin1szG1DzC6L3sW/KCmx5sBZlqMoIRCLNWL4YznN2Ltb5besds+Q/zftH+38DM9wSamwR8ikAAAAASUVORK5CYII="""
+        self.iconphoto(True, tk.PhotoImage(data=icon_data))
+
         self.tree = ttk.Treeview(self, columns=('workspace_stage', 'state'), show='headings')
 
         self.tree.heading('workspace_stage', text='Workspace / Stage')
@@ -156,6 +160,14 @@ class App(tk.Tk):
         elif self.last_empty_time is None:
             self.last_empty_time = time.time()
             self.after(self.terminate_on_empty_timeout * 1000, self.check_terminate_timeout)
+
+        states = collections.Counter(state for _, state in pipeline_queue.items())
+        if states['running'] > 0:
+            self.title(f'⏩︎{states["running"]} Pipeline Server')
+        elif states['waiting'] > 0:
+            self.title(f'⏯{states["waiting"]} Pipeline Server')
+        else:
+            self.title('Pipeline Server')
 
         self.tree.delete(*self.tree.get_children())
 
