@@ -62,8 +62,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.server.pipeline_queue[workspace_stage] = state
         else:
             del self.server.pipeline_queue[workspace_stage]
-            if len(self.server.pipeline_queue) == 0:
-                self.server.window.schedule_destroy()
         self.server.window.schedule_update(self.server.pipeline_queue)
         self.send_response(200)
         self.end_headers()
@@ -101,7 +99,9 @@ class App(tk.Tk):
         super().__init__(*args, **kwargs)
 
         self.update_queue = queue.Queue()
+        self.terminate_on_empty_timeout = 30
         self.terminating = False
+        self.last_empty_time = None
 
         self.title('Pipeline Server')
         self.geometry('500x300+100+100')
@@ -141,6 +141,12 @@ class App(tk.Tk):
 
         pipeline_queue = self.update_queue.get()
 
+        if len(pipeline_queue) > 0:
+            self.last_empty_time = None
+        elif self.last_empty_time is None:
+            self.last_empty_time = time.time()
+            self.after(self.terminate_on_empty_timeout * 1000, self.check_terminate_timeout)
+
         self.tree.delete(*self.tree.get_children())
 
         for row_idx, (workspace_stage, state) in enumerate(pipeline_queue.items()):
@@ -148,6 +154,19 @@ class App(tk.Tk):
             self.tree.insert('', tk.END, values=(workspace_stage, state), tag=row_tag)
         self.tree.tag_configure('gray', background='#cccccc')
         self.tree.tag_configure('white', background='#ffffff')
+
+    def check_terminate_timeout(self):
+        if self.terminating:
+            return
+
+        if self.last_empty_time is None:
+            return
+
+        if time.time() - self.last_empty_time >= self.terminate_on_empty_timeout:
+            self.terminating = True
+            self.destroy()
+        else:
+            self.after(1000, self.check_terminate_timeout)
 
 
 if __name__ == '__main__':
