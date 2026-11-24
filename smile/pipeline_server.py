@@ -1,7 +1,7 @@
 """
 Pipeline server used by stages of the processing pipeline for
-https://github.com/mcmhsieh/Smile to display their working states and provide
-information for each stage to wait for their predecessor to complete.
+https://github.com/mcmhsieh/Smile to report and display their working states,
+and as a resource for pipeline scheduling.
 
 SPDX-FileCopyrightText: 2026 Mark Hsieh
 SPDX-License-Identifier: MIT
@@ -11,7 +11,6 @@ import sys
 import os
 import argparse
 import pathlib
-import platform
 import subprocess
 import threading
 import queue
@@ -60,6 +59,9 @@ class PipelineServer(http.server.HTTPServer):
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if not self.server.window.active.is_set():
+            self.send_error(503)
+            return
         response = json.dumps(self.server.pipeline_queue).encode('utf8')
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -68,14 +70,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(response)
 
     def do_POST(self):
+        if not self.server.window.active.is_set():
+            self.send_error(503)
+            return
         workspace_stage, state = json.loads(self.rfile.read(int(self.headers['Content-Length'])).decode('utf-8'))
         if state is not None:
             self.server.pipeline_queue[workspace_stage] = state
         else:
             del self.server.pipeline_queue[workspace_stage]
         self.server.window.schedule_update(self.server.pipeline_queue)
+        response = json.dumps(self.server.pipeline_queue).encode('utf8')
         self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', len(response))
         self.end_headers()
+        self.wfile.write(response)
 
 def httpd_main(httpd):
     try:
@@ -93,16 +102,22 @@ def start_pipeline_server():
         try:
             get_queue_from_pipeline_server()
             break
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as e:
+            if isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
+                if e.response.status_code != 503:
+                    raise
             assert time.time() < start_time + 30, 'timeout waiting for pipeline server to respond'
             print('waiting for pipeline server to respond')
             time.sleep(1)
 
 def post_to_pipeline_server(obj):
-    requests.post(f'http://{SERVER_NAME}:{SERVER_PORT}', data=json.dumps(obj), timeout=10)
+    r = requests.post(f'http://{SERVER_NAME}:{SERVER_PORT}', data=json.dumps(obj), timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 def get_queue_from_pipeline_server():
     r = requests.get(f'http://{SERVER_NAME}:{SERVER_PORT}', timeout=10)
+    r.raise_for_status()
     return r.json()
 
 class App(tk.Tk):
@@ -113,6 +128,8 @@ class App(tk.Tk):
         self.terminate_on_empty_timeout = 30
         self.terminating = False
         self.last_empty_time = None
+        self.active = threading.Event()
+        self.after(0, self.active.set)
 
         self.title('Pipeline Server')
         self.geometry('500x300+100+100')
@@ -210,7 +227,11 @@ if __name__ == '__main__':
                     httpd.shutdown()
                     httpd_thread.join()
         except OSError as e:
-            if e.errno == {'Windows': 10048, 'Linux': 98, 'Darwin': 48}[platform.system()]:
+            # os.name returns which implementation of the os APIs was imported
+            # sys.platform returns build time information
+            # The platform module returns runtime diagnostic information intended for humans to read
+            # and is currently not dependable for machine interpretation because return values may change over time.
+            if e.errno == {'win32': 10048, 'linux': 98, 'darwin': 48}[sys.platform]:
                 # [WinError 10048] Only one usage of each socket address (protocol/network address/port) is normally permitted
                 # [Errno 98] Address already in use
                 # [Errno 48] Address already in use
