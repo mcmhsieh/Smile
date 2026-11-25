@@ -18,6 +18,7 @@ import pathlib
 import shutil
 import pickle
 import json
+import concurrent.futures
 
 import numpy as np
 import scipy
@@ -207,9 +208,7 @@ if __name__ == '__main__':
     # Dictionary of specular reflection masks associated with the images from the previous key frame to the current frame
     image_masks = {}
 
-    for frame_index, frame_time in frame_indices:
-        print('filtering frame', frame_index, frame_time)
-
+    def filter_frame(frame_index, frame_time):
         input_filepath = frame_images_metadata[(frame_index, frame_time)]['filepath']
 
         frame_data = np.fromfile(input_filepath, dtype=np.uint8)
@@ -264,9 +263,6 @@ if __name__ == '__main__':
                                          / cv2.GaussianBlur(np.ones(inpainted_img.shape, dtype=np.float32), ksize, sigmaX=0, sigmaY=0, borderType=cv2.BORDER_CONSTANT), 0, 255).astype(np.uint8)
         filtered_inpainted_img[~img_mask] = image[~img_mask]
 
-        if len(filtered_images) == 0:
-            print(f'filtered image shape {filtered_inpainted_img.shape}')
-
         if make_model in illumination_ratios:
             illumination_ratio = illumination_ratios[make_model]
             overcompensation = (np.max(filtered_inpainted_img, axis=-1).astype(np.float32) * illumination_ratio
@@ -288,10 +284,6 @@ if __name__ == '__main__':
             image = np.clip(np.round(image.astype(np.float32) * illumination_ratio[:, :, None]), 0, 255).astype(np.uint8)
             filtered_inpainted_img = np.clip(np.round(filtered_inpainted_img.astype(np.float32) * illumination_ratio[:, :, None]), 0, 255).astype(np.uint8)
 
-        frame_images[(frame_index, frame_time)] = image
-        image_masks[(frame_index, frame_time)] = img_mask
-        filtered_images[(frame_index, frame_time)] = filtered_inpainted_img
-
         filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.resized.png'
         output_path = output_dirpath / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,16 +299,36 @@ if __name__ == '__main__':
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(output_path, cv2.cvtColor(filtered_inpainted_img, cv2.COLOR_RGB2BGR), params=[cv2.IMWRITE_PNG_COMPRESSION, 1])
 
+        return image, img_mask, filtered_inpainted_img
+
+    # https://docs.python.org/3.11/library/concurrent.futures.html#concurrent.futures.ThreadPoolExecutor
+    # Default value of max_workers is min(32, os.cpu_count() + 4).
+    # This default value preserves at least 5 workers for I/O bound tasks.
+    # It utilizes at most 32 CPU cores for CPU bound tasks which release the GIL.
+    # And it avoids using very large resources implicitly on many-core machines.
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {(frame_index, frame_time): executor.submit(filter_frame, frame_index, frame_time)
+                   for frame_index, frame_time in frame_indices}
+
+        for (frame_index, frame_time), future in futures.items():
+            print('filtering frame', frame_index, frame_time)
+
+            image, img_mask, filtered_inpainted_img = future.result()
+
+            if len(filtered_images) == 0:
+                print(f'filtered image shape {filtered_inpainted_img.shape}')
+
+            frame_images[(frame_index, frame_time)] = image
+            image_masks[(frame_index, frame_time)] = img_mask
+            filtered_images[(frame_index, frame_time)] = filtered_inpainted_img
+
     # %%
 
     # Dictionary of optical flow maps between sequential frames
     # TODO: consider generating flow masks based on the consistency between forward and reverse flow vectors
     flow_maps = {}
 
-    for prev_img_indices, next_img_indices in zip(frame_indices[:-1], frame_indices[1:]):
-
-        print('calculating optical flow between frames', *prev_img_indices, *next_img_indices)
-
+    def calculate_optical_flow(prev_img_indices, next_img_indices):
         prev_img = filtered_images[prev_img_indices]
         img = filtered_images[next_img_indices]
 
@@ -352,18 +364,28 @@ if __name__ == '__main__':
                                             pyr_scale=pyr_scale, levels=levels, winsize=51, iterations=3,
                                             poly_n=7, poly_sigma=1.5, flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN+cv2.OPTFLOW_USE_INITIAL_FLOW)
         flow = cv2.resize(flow, (0, 0), fx=1/zoom, fy=1/zoom, interpolation=cv2.INTER_LINEAR) / zoom
+        return flow
 
-        flow_maps[(prev_img_indices, next_img_indices)] = flow
+    # https://docs.python.org/3.11/library/concurrent.futures.html#concurrent.futures.ThreadPoolExecutor
+    # Default value of max_workers is min(32, os.cpu_count() + 4).
+    # This default value preserves at least 5 workers for I/O bound tasks.
+    # It utilizes at most 32 CPU cores for CPU bound tasks which release the GIL.
+    # And it avoids using very large resources implicitly on many-core machines.
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {(prev_img_indices, next_img_indices): executor.submit(calculate_optical_flow, prev_img_indices, next_img_indices)
+                   for prev_img_indices, next_img_indices in zip(frame_indices[:-1], frame_indices[1:])}
+
+        for (prev_img_indices, next_img_indices), future in futures.items():
+            print('calculating optical flow between frames', *prev_img_indices, *next_img_indices)
+            flow_maps[(prev_img_indices, next_img_indices)] = future.result()
 
     # %%
 
     # The blur scores are associated with the next frame, and therefore the first frame has no blur score
     relative_blur_scores = []
     frame_blur_results = []
-    for prev_img_indices, next_img_indices in zip(frame_indices[:-1], frame_indices[1:]):
 
-        print('calculating blur score for frame', *next_img_indices)
-
+    def calculate_blur_score(prev_img_indices, next_img_indices):
         prev_gray = img_to_normed_gray(filtered_images[prev_img_indices]).astype(np.float32) / 255
         next_gray = img_to_normed_gray(filtered_images[next_img_indices]).astype(np.float32) / 255
 
@@ -396,9 +418,27 @@ if __name__ == '__main__':
         prev_grad2 = np.sqrt(np.nanmean(prev_gray_grad2))
         next_grad2 = np.sqrt(np.nanmean(next_gray_warp_grad2))
 
-        relative_blur_scores.append(prev_grad2 - next_grad2)
-        frame_blur_results.append((prev_img_indices, next_img_indices, prev_gray, next_gray, next_gray_warp,
-                                   prev_gray_grad2, next_gray_warp_grad2, prev_grad2, next_grad2))
+        return (prev_img_indices, next_img_indices, prev_gray, next_gray, next_gray_warp,
+                prev_gray_grad2, next_gray_warp_grad2, prev_grad2, next_grad2)
+
+    # https://docs.python.org/3.11/library/concurrent.futures.html#concurrent.futures.ThreadPoolExecutor
+    # Default value of max_workers is min(32, os.cpu_count() + 4).
+    # This default value preserves at least 5 workers for I/O bound tasks.
+    # It utilizes at most 32 CPU cores for CPU bound tasks which release the GIL.
+    # And it avoids using very large resources implicitly on many-core machines.
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {(prev_img_indices, next_img_indices): executor.submit(calculate_blur_score, prev_img_indices, next_img_indices)
+                   for prev_img_indices, next_img_indices in zip(frame_indices[:-1], frame_indices[1:])}
+
+        for (prev_img_indices, next_img_indices), future in futures.items():
+            print('calculating blur score for frame', *next_img_indices)
+
+            (prev_img_indices, next_img_indices, prev_gray, next_gray, next_gray_warp,
+             prev_gray_grad2, next_gray_warp_grad2, prev_grad2, next_grad2) = future.result()
+
+            relative_blur_scores.append(prev_grad2 - next_grad2)
+            frame_blur_results.append((prev_img_indices, next_img_indices, prev_gray, next_gray, next_gray_warp,
+                                       prev_gray_grad2, next_gray_warp_grad2, prev_grad2, next_grad2))
 
     relative_blur_scores = np.array(relative_blur_scores)
 

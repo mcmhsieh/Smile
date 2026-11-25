@@ -1186,7 +1186,7 @@ if __name__ == '__main__':
     if False:
         lr = 0.005
         num_steps = 3000
-        convergence_criterion = {'atol': 1e-5, 'window_size': 100, 'min_num_steps': 300}
+        convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 300}
         optimiser = torch.optim.Adam([model_frame_synth_projection_scores, model_interframe_synth_projection_relative_score_scaling], lr=lr)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
@@ -1205,14 +1205,10 @@ if __name__ == '__main__':
                 print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std, 'learning rate', scheduler.get_last_lr()[0])
             if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['atol']:
                 break
-
-        print('len(losses)', len(losses))
-        print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
-        print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
     else:
         lr = 0.005
         num_steps = 3000
-        convergence_criterion = {'atol': 1e-5, 'window_size': 100, 'min_num_steps': 300}
+        convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 300}
         optimiser = torch.optim.Adam([model_frame_synth_projection_scores, model_interframe_synth_projection_relative_score_scaling], lr=lr)
         losses = []
         loss_components = {}
@@ -1227,6 +1223,10 @@ if __name__ == '__main__':
                 print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std)
             if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['atol']:
                 break
+
+    print('len(losses)', len(losses))
+    print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
+    print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
 
     with torch.no_grad():
         frame_synth_projection_scores = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_scores - 0.5)).numpy(force=True)
@@ -1311,7 +1311,7 @@ if __name__ == '__main__':
     if True:
         lr = 0.005
         num_steps = 20000
-        convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 5000}
+        convergence_criterion = {'atol': 1e-5, 'window_size': 500, 'min_num_steps': 5000}
         optimiser = torch.optim.Adam([model_target_frames], lr=lr)
         losses = []
         loss_components = {}
@@ -1330,7 +1330,7 @@ if __name__ == '__main__':
     else:
         lr = 0.005
         num_steps = 20000
-        convergence_criterion = {'atol': 1e-3, 'window_size': 200, 'min_num_steps': 5000}
+        convergence_criterion = {'atol': 1e-3, 'window_size': 500, 'min_num_steps': 5000}
         optimiser = torch.optim.Adam([model_target_frames], lr=lr)
         losses = []
         loss_components = {}
@@ -2118,7 +2118,7 @@ if __name__ == '__main__':
     model_frames = torch.zeros(down_mapping_scores_shape, dtype=torch.float32, requires_grad=True)
     # TODO: only map & optimise the set of coherent secondary frames, which would make the application of np.nan_to_num() redundant
     # Raise the interframe cost floor to apply a minimum base value for any junction/interface between frames
-    model_interframe_costs = torch.tensor(np.maximum(interframe_costs, 0.1) * (1 - np.identity(len(np.diag(interframe_costs)))), dtype=torch.float32)
+    model_interframe_costs = torch.tensor(np.maximum(interframe_costs, 0.05) * (1 - np.identity(len(np.diag(interframe_costs)))), dtype=torch.float32)
 
     def frame_loss_fn(model_frames):
         prob_model_frames = torch.nn.functional.softmax(model_frames, dim=0)
@@ -2228,11 +2228,11 @@ if __name__ == '__main__':
             model_max_mapping_scores.copy_(torch.max(model_mapping_scores, dim=0).values)
             model_mapping_scores_mask.copy_(torch.clamp(model_max_mapping_scores / mapping_score_mask_threshold, min=log_clamp_min, max=1.0))
             model_frames.copy_(torch.tensor(np.identity(down_mapping_scores.shape[0])[primary_frame_idx, :][:, None, None] * np.ones(down_mapping_scores.shape[1:]),
-                                            dtype=torch.float32, requires_grad=True))
+                                            dtype=torch.float32))
 
         lr = 0.005
         num_steps = 20000
-        convergence_criterion = {'atol': 1e-5, 'window_size': 200, 'min_num_steps': 2000}
+        convergence_criterion = {'atol': 1e-5, 'window_size': 500, 'min_num_steps': 2000}
         optimiser = torch.optim.Adam([model_frames], lr=lr, fused=True)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
@@ -2402,7 +2402,7 @@ if __name__ == '__main__':
 
         lr = 0.005
         num_steps = 10000
-        convergence_criterion = {'atol': 1e-4, 'window_size': 100, 'min_num_steps': 1000}
+        convergence_criterion = {'atol': 1e-4, 'window_size': 500, 'min_num_steps': 1000}
         optimiser = torch.optim.Adam([model_frame_intensity_transform_coeffs], lr=lr, fused=True)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))

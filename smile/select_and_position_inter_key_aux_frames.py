@@ -352,7 +352,9 @@ if __name__ == '__main__':
     # %%
 
     aux_frame_indices = []
+    aux_frame_image_sample_points = []
     aux_frame_image_triangulated_point_idxs = []
+    aux_frame_image_point_weights = []
     aux_frame_camera_extrinsics = []
 
     valid_mask = np.all(np.isfinite(model_triangulated_points[:3, :]), axis=0)
@@ -690,173 +692,175 @@ if __name__ == '__main__':
         print('num corresponding previous triangulation points', len(intersected_corres_idxs))
         print('num corresponding previous triangulation point inliers', len(inlier_idxs))
 
-
-        camera_fxy = torch.tensor(np.diag(camera_intrinsic[:2, :2])[:, None], dtype=torch.float32)
-        camera_cxy = torch.tensor(camera_intrinsic[:2, 2:], dtype=torch.float32)
-
-        # Although including all the camera extrinsics introduces redundant degrees of freedom,
-        # this appears to help make the optimisation unbiased to each camera extrinsic.
-        # Previously when the first frame was fixed to the origin/axes, it appeared to be susceptible
-        # to higher projection errors especially for larger convergence criteria thresholds,
-        # perhaps because the gradient graph for the first frame is far more convoluted.
-        rvecs = []
-        tvecs = []
-        for camera_extrinsic in [camera_transform @ camera_extrinsics[current_key_frame_idx]]:
-            rvec, jacobian = cv2.Rodrigues(camera_extrinsic[:3, :3])
-            tvec = camera_extrinsic[:3, 3:]
-            rvecs.append(rvec.flatten())
-            tvecs.append(tvec)
-        model_rvecs = torch.tensor(np.array(rvecs), dtype=torch.float32, requires_grad=True)
-        model_tvecs = torch.tensor(np.array(tvecs), dtype=torch.float32, requires_grad=True)
-
         # TODO: try higher confidence map threshold
 
+        # Add the index array mapping current image points to triangulated points
         current_image_to_triangulated_point_idxs = np.full((len(xsn),), fill_value=-1, dtype=int)
         current_image_to_triangulated_point_idxs[intersected_corres_idxs] = prev_image_to_triangulated_point_idxs[intersected_corres_idxs]
-
-        triangulated_image_points = []
-        triangulated_image_points_weights = []
-        for (xs, ys), image_to_triangulated_point_idxs, image_point_weights, camera_extrinsic in zip([(xsn, ysn)],
-                                                                                                     [current_image_to_triangulated_point_idxs],
-                                                                                                     [frame_image_point_weights],
-                                                                                                     [camera_transform @ camera_extrinsics[current_key_frame_idx]]):
-            triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
-            triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
-
-            image_points = np.full((2, model_triangulated_points.shape[1]), fill_value=np.nan, dtype=np.float32)
-            image_points[:, triangulated_point_idxs] = np.vstack([xs, ys])[:, triangulated_image_idxs]
-            triangulated_image_points.append(image_points)
-
-            image_points_weights = np.zeros((6, model_triangulated_points.shape[1]))
-
-            primary_eig_weights, secondary_eig_weights, primary_eig_vecs = image_point_weights
-            eig_weights = primary_eig_weights + secondary_eig_weights * 1j
-            interp = scipy.interpolate.RegularGridInterpolator((np.arange(eig_weights.shape[0]), np.arange(eig_weights.shape[1])),
-                                                               eig_weights,
-                                                               method='linear', bounds_error=True)
-            eig_weights = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs])).astype(np.complex64)
-            eig_vecs = primary_eig_vecs[:, :, 0] + primary_eig_vecs[:, :, 1] * 1j
-            interp = scipy.interpolate.RegularGridInterpolator((np.arange(eig_vecs.shape[0]), np.arange(eig_vecs.shape[1])),
-                                                               eig_vecs,
-                                                               method='linear', bounds_error=True)
-            eig_vecs = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs])).astype(np.complex64)
-            eig_weights = np.vstack([eig_weights.real, eig_weights.imag,
-                                     eig_vecs.real, eig_vecs.imag,
-                                     eig_vecs.imag, -eig_vecs.real])
-            image_points_weights[:, triangulated_point_idxs] = eig_weights
-
-            triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:3, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
-            triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals[:, triangulated_point_idxs]
-            camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
-
-            normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
-
-            camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
-            camera_ray_to_image_plane = camera_rays * -triangulated_normals[2, :] / camera_rays[2, :]
-
-            object_to_image_ratio = (np.linalg.norm(triangulated_normals + camera_ray_to_object_plane, axis=0)
-                                     / np.clip(np.linalg.norm(triangulated_normals + camera_ray_to_image_plane, axis=0), 1e-8, np.inf))
-            perspective_distortion = 1 - np.min(np.stack([object_to_image_ratio,
-                                                          np.clip(1 / object_to_image_ratio, 1e-8, np.inf)]), axis=0)
-
-            triangulated_normal_weights = 0.5 * (1 - scipy.special.erf((perspective_distortion - 0.4) / 0.15))
-            triangulated_normal_weights[normal_ray_alignment >= 0] = 0
-            image_points_weights[:2, triangulated_point_idxs] *= triangulated_normal_weights
-
-            triangulated_image_points_weights.append(image_points_weights)
-        triangulated_image_points = np.array(triangulated_image_points)
-        triangulated_image_points_weights = np.array(triangulated_image_points_weights)
-
-        triangulated_point_mapping_counts = np.sum(np.all(np.isfinite(triangulated_image_points), axis=1), axis=0)
-        # As the optimisation is only performed over one frame, the mapping counts are either 0 or 1
-        bundle_triangulated_point_idxs = np.where(triangulated_point_mapping_counts > 0)[0]
-        assert np.all(np.isfinite(model_triangulated_points[:3, bundle_triangulated_point_idxs]))
-
-        print('len(bundle_triangulated_point_idxs)', len(bundle_triangulated_point_idxs),
-              'of len(triangulated_point_mapping_counts)', len(triangulated_point_mapping_counts))
-
-        model_triangulated_points_tensor = torch.tensor(model_triangulated_points[:3, bundle_triangulated_point_idxs], dtype=torch.float32)
-        bundle_image_points = torch.tensor(triangulated_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
-        bundle_image_points[~torch.isfinite(bundle_image_points)] = 0
-        bundle_image_points_weights = torch.tensor(triangulated_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
-        #threshold_target = torch.tensor(3.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
-        threshold_target = torch.tensor(10.0, dtype=torch.float32)
-        #gamma_softplus_alpha = torch.tensor(2.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
-        gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
-
-        def calc_projected_image_points():
-            # Select Rodrigues formula with fast=True
-            model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
-            object_points = model_Rs @ model_triangulated_points_tensor + model_tvecs
-
-            xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
-            yd = object_points[:, 1:2, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
-
-            return torch.cat([xd, yd], dim=1) * camera_fxy + camera_cxy
-
-        def loss_fn(temperature):
-            bundle_projected_points = calc_projected_image_points()
-            projection_offset = bundle_projected_points - bundle_image_points
-            projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
-                                          torch.sum(projection_offset * bundle_image_points_weights[:, 4:, :], dim=1)], dim=1)
-            if False:
-                projection_err_losses = projection_err2
-            elif False:
-                # softplus curved region spans from approximately -4.5 to 0.5
-                # starts from around -4.5 with a span of 5.0
-                projection_err_losses = torch.nn.functional.softplus(torch.sqrt(projection_err2) / 3.0 * 5.0 - 4.5)
-            else:
-                # Heavy tailed bell shaped function based on Student's t-distribution with v = 0
-                # y=1/sqrt(1+x**2) has a knee point at x ~ 3.0 beyond which it slowly converges to 0, e.g. [1.0, 0.71], [3.0, 0.32], [9.9, 0.1]
-                # d(1-y)/dx (the loss function's virtual spring tension) rises rapidly from zero, peaks at x ~ 0.71 and then tends to -1/x**2,
-                # e.g. [0, 0], [0.71, 0.38], [3, 0.1], [9.9, 0.01], so the virtual spring is elastic x < 0.71 beyond which it becomes plastic.
-                # Note that when x is scaled (e.g. by the threshold value) then the gradients d(1-y)/dx are naturally inversely scaled.
-                # The gradients could be made invariant to x-scaling by using y=s/sqrt(1+(x/s)**2), but since that just scales the loss magnitude
-                # that would not make any difference to gradient descent based optimisation. We also have to be aware that Adam's RMSProp and Momentum
-                # states can be adversely disrupted by abrupt changes to the loss function.
-                threshold = threshold_target * (1 - temperature) + 100.0 * temperature
-                #projection_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(projection_err * 3.0 / threshold, 2))
-                projection_err_losses = gamma_softplus(projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
-
-            return torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
-
-        lr = 0.005
-        num_steps = 1000
-        convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 200}
-        optimiser = torch.optim.Adam([model_rvecs, model_tvecs], lr=lr)
-        lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
-                                   * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
-        losses = []
-        for optim_step in range(num_steps):
-            optimiser.zero_grad()
-            temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-            loss = loss_fn(temperature)
-            loss.backward()
-            optimiser.step()
-            scheduler.step()
-            losses.append(loss.numpy(force=True))
-            loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
-            if optim_step % 100 == 0:
-                print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std, 'learning rate', scheduler.get_last_lr()[0])
-            if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['rtol'] * losses[-1]:
-                break
-
-        print('len(losses)', len(losses))
-        print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
-        print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
+        aux_frame_image_triangulated_point_idxs.append(current_image_to_triangulated_point_idxs)
 
         aux_frame_indices.append(img_indices)
+        aux_frame_image_sample_points.append((xsn, ysn))
+        aux_frame_image_point_weights.append(frame_image_point_weights)
+        aux_frame_camera_extrinsics.append(camera_transform @ camera_extrinsics[current_key_frame_idx])
 
-        # Add the index array mapping current image points to triangulated points
-        image_to_triangulated_point_idxs = np.full((len(xsn),), fill_value=-1, dtype=int)
-        image_to_triangulated_point_idxs[intersected_corres_idxs] = prev_image_to_triangulated_point_idxs[intersected_corres_idxs]
-        aux_frame_image_triangulated_point_idxs.append(image_to_triangulated_point_idxs)
+    # %%
 
-        for rvec, tvec in zip(model_rvecs.numpy(force=True), model_tvecs.numpy(force=True)):
-            R, jacobian = cv2.Rodrigues(rvec)
-            t = tvec
-            aux_frame_camera_extrinsics.append(np.block([[R, t], [0, 0, 0, 1]]))
+    camera_fxy = torch.tensor(np.diag(camera_intrinsic[:2, :2])[:, None], dtype=torch.float32)
+    camera_cxy = torch.tensor(camera_intrinsic[:2, 2:], dtype=torch.float32)
+
+    rvecs = []
+    tvecs = []
+    for camera_extrinsic in aux_frame_camera_extrinsics:
+        rvec, jacobian = cv2.Rodrigues(camera_extrinsic[:3, :3])
+        tvec = camera_extrinsic[:3, 3:]
+        rvecs.append(rvec.flatten())
+        tvecs.append(tvec)
+    model_rvecs = torch.tensor(np.array(rvecs), dtype=torch.float32, requires_grad=True)
+    model_tvecs = torch.tensor(np.array(tvecs), dtype=torch.float32, requires_grad=True)
+
+    triangulated_image_points = []
+    triangulated_image_points_weights = []
+    for (xs, ys), image_to_triangulated_point_idxs, image_point_weights, camera_extrinsic in zip(aux_frame_image_sample_points,
+                                                                                                 aux_frame_image_triangulated_point_idxs,
+                                                                                                 aux_frame_image_point_weights,
+                                                                                                 aux_frame_camera_extrinsics):
+        triangulated_image_idxs = np.where(image_to_triangulated_point_idxs >= 0)[0]
+        triangulated_point_idxs = image_to_triangulated_point_idxs[triangulated_image_idxs]
+
+        image_points = np.full((2, model_triangulated_points.shape[1]), fill_value=np.nan, dtype=np.float32)
+        image_points[:, triangulated_point_idxs] = np.vstack([xs, ys])[:, triangulated_image_idxs]
+        triangulated_image_points.append(image_points)
+
+        image_points_weights = np.zeros((6, model_triangulated_points.shape[1]))
+
+        primary_eig_weights, secondary_eig_weights, primary_eig_vecs = image_point_weights
+        eig_weights = primary_eig_weights + secondary_eig_weights * 1j
+        interp = scipy.interpolate.RegularGridInterpolator((np.arange(eig_weights.shape[0]), np.arange(eig_weights.shape[1])),
+                                                           eig_weights,
+                                                           method='linear', bounds_error=True)
+        eig_weights = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs])).astype(np.complex64)
+        eig_vecs = primary_eig_vecs[:, :, 0] + primary_eig_vecs[:, :, 1] * 1j
+        interp = scipy.interpolate.RegularGridInterpolator((np.arange(eig_vecs.shape[0]), np.arange(eig_vecs.shape[1])),
+                                                           eig_vecs,
+                                                           method='linear', bounds_error=True)
+        eig_vecs = interp((image_points[1, triangulated_point_idxs], image_points[0, triangulated_point_idxs])).astype(np.complex64)
+        eig_weights = np.vstack([eig_weights.real, eig_weights.imag,
+                                 eig_vecs.real, eig_vecs.imag,
+                                 eig_vecs.imag, -eig_vecs.real])
+        image_points_weights[:, triangulated_point_idxs] = eig_weights
+
+        triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points[:3, triangulated_point_idxs] + camera_extrinsic[:3, 3:]
+        triangulated_normals = camera_extrinsic[:3, :3] @ model_triangulated_normals[:, triangulated_point_idxs]
+        camera_rays = triangulated_points / np.clip(np.linalg.norm(triangulated_points, axis=0), 1e-6, np.inf)
+
+        normal_ray_alignment = np.sum(camera_rays * triangulated_normals, axis=0)
+
+        camera_ray_to_object_plane = camera_rays / np.clip(-normal_ray_alignment, 1e-8, 1)
+        camera_ray_to_image_plane = camera_rays * -triangulated_normals[2, :] / camera_rays[2, :]
+
+        object_to_image_ratio = (np.linalg.norm(triangulated_normals + camera_ray_to_object_plane, axis=0)
+                                 / np.clip(np.linalg.norm(triangulated_normals + camera_ray_to_image_plane, axis=0), 1e-8, np.inf))
+        perspective_distortion = 1 - np.min(np.stack([object_to_image_ratio,
+                                                      np.clip(1 / object_to_image_ratio, 1e-8, np.inf)]), axis=0)
+
+        triangulated_normal_weights = 0.5 * (1 - scipy.special.erf((perspective_distortion - 0.4) / 0.15))
+        triangulated_normal_weights[normal_ray_alignment >= 0] = 0
+        image_points_weights[:2, triangulated_point_idxs] *= triangulated_normal_weights
+
+        triangulated_image_points_weights.append(image_points_weights)
+    triangulated_image_points = np.array(triangulated_image_points)
+    triangulated_image_points_weights = np.array(triangulated_image_points_weights)
+
+    triangulated_point_mapping_counts = np.sum(np.all(np.isfinite(triangulated_image_points), axis=1), axis=0)
+    # As the optimisation is only performed over auxiliary frame extrinsics and not jointly optimising the triangulated
+    # point coordinates, include triangulated points with any auxiliary frame image mapping within the bundle
+    bundle_triangulated_point_idxs = np.where(triangulated_point_mapping_counts >= 1)[0]
+    assert np.all(np.isfinite(model_triangulated_points[:3, bundle_triangulated_point_idxs]))
+
+    print('len(bundle_triangulated_point_idxs)', len(bundle_triangulated_point_idxs),
+          'of len(triangulated_point_mapping_counts)', len(triangulated_point_mapping_counts))
+
+    model_triangulated_points_tensor = torch.tensor(model_triangulated_points[:3, bundle_triangulated_point_idxs], dtype=torch.float32)
+    bundle_image_points = torch.tensor(triangulated_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
+    bundle_image_points[~torch.isfinite(bundle_image_points)] = 0
+    bundle_image_points_weights = torch.tensor(triangulated_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
+    #threshold_target = torch.tensor(3.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
+    threshold_target = torch.tensor(10.0, dtype=torch.float32)
+    #gamma_softplus_alpha = torch.tensor(2.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
+    gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
+
+    def calc_projected_image_points():
+        # Select Rodrigues formula with fast=True
+        model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
+        object_points = model_Rs @ model_triangulated_points_tensor + model_tvecs
+
+        xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
+        yd = object_points[:, 1:2, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
+
+        return torch.cat([xd, yd], dim=1) * camera_fxy + camera_cxy
+
+    def loss_fn(model_rvecs, model_tvecs, temperature):
+        bundle_projected_points = calc_projected_image_points()
+        projection_offset = bundle_projected_points - bundle_image_points
+        projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
+                                      torch.sum(projection_offset * bundle_image_points_weights[:, 4:, :], dim=1)], dim=1)
+        if False:
+            projection_err_losses = projection_err2
+        elif False:
+            # softplus curved region spans from approximately -4.5 to 0.5
+            # starts from around -4.5 with a span of 5.0
+            projection_err_losses = torch.nn.functional.softplus(torch.sqrt(projection_err2) / 3.0 * 5.0 - 4.5)
+        else:
+            # Heavy tailed bell shaped function based on Student's t-distribution with v = 0
+            # y=1/sqrt(1+x**2) has a knee point at x ~ 3.0 beyond which it slowly converges to 0, e.g. [1.0, 0.71], [3.0, 0.32], [9.9, 0.1]
+            # d(1-y)/dx (the loss function's virtual spring tension) rises rapidly from zero, peaks at x ~ 0.71 and then tends to -1/x**2,
+            # e.g. [0, 0], [0.71, 0.38], [3, 0.1], [9.9, 0.01], so the virtual spring is elastic x < 0.71 beyond which it becomes plastic.
+            # Note that when x is scaled (e.g. by the threshold value) then the gradients d(1-y)/dx are naturally inversely scaled.
+            # The gradients could be made invariant to x-scaling by using y=s/sqrt(1+(x/s)**2), but since that just scales the loss magnitude
+            # that would not make any difference to gradient descent based optimisation. We also have to be aware that Adam's RMSProp and Momentum
+            # states can be adversely disrupted by abrupt changes to the loss function.
+            threshold = threshold_target * (1 - temperature) + 100.0 * temperature
+            #projection_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(projection_err * 3.0 / threshold, 2))
+            projection_err_losses = gamma_softplus(projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
+
+        return torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
+
+    graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn,
+                                                        sample_args=(model_rvecs, model_tvecs, torch.tensor(0, dtype=torch.float32)))
+
+    lr = 0.005
+    num_steps = 10000
+    convergence_criterion = {'rtol': 1e-4, 'window_size': 500, 'min_num_steps': 1000}
+    optimiser = torch.optim.Adam([model_rvecs, model_tvecs], lr=lr, fused=True)
+    lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
+                               * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
+    losses = []
+    for optim_step in range(num_steps):
+        optimiser.zero_grad()
+        temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
+        loss = graphed_loss_fn(model_rvecs, model_tvecs, torch.tensor(temperature, dtype=torch.float32))
+        loss.backward()
+        optimiser.step()
+        scheduler.step()
+        losses.append(loss.numpy(force=True))
+        loss_window_std = np.std(losses[-convergence_criterion['window_size']:])
+        if optim_step % 100 == 0:
+            print('optim_step', optim_step, 'loss', losses[-1], 'loss_window_std', loss_window_std,
+                  'learning rate', np.round(scheduler.get_last_lr()[0], 6), 'temperature', np.round(temperature, 3))
+        if optim_step >= convergence_criterion['min_num_steps'] and loss_window_std < convergence_criterion['rtol'] * losses[-1]:
+            break
+
+    print('len(losses)', len(losses))
+    print('initial, first, final loss', losses[0], losses[convergence_criterion['min_num_steps']], losses[-1])
+    print('highest, lowest loss', np.max(losses[convergence_criterion['min_num_steps']:]), np.min(losses[convergence_criterion['min_num_steps']:]))
+
+    del aux_frame_camera_extrinsics[:]
+    for rvec, tvec in zip(model_rvecs.numpy(force=True), model_tvecs.numpy(force=True)):
+        R, jacobian = cv2.Rodrigues(rvec)
+        t = tvec
+        aux_frame_camera_extrinsics.append(np.block([[R, t], [0, 0, 0, 1]]))
 
     # %%
 

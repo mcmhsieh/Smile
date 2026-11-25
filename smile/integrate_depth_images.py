@@ -1162,8 +1162,8 @@ if __name__ == '__main__':
     graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn, sample_args=(model_depths, torch.tensor(0, dtype=torch.float32), torch.tensor(0, dtype=torch.float32)))
 
     lr = 0.005
-    num_steps = 10000
-    convergence_criterion = {'atol': 1e-4, 'window_size': 300, 'min_num_steps': 1000}
+    num_steps = 20000
+    convergence_criterion = {'atol': 1e-4, 'window_size': 500, 'min_num_steps': 1000}
     optimiser = torch.optim.Adam([model_depths], lr=lr, fused=True)
     lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
@@ -1212,7 +1212,7 @@ if __name__ == '__main__':
 
     lr = 0.005
     num_steps = 10000
-    convergence_criterion = {'atol': 1e-4, 'window_size': 300, 'min_num_steps': 1000}
+    convergence_criterion = {'atol': 1e-4, 'window_size': 500, 'min_num_steps': 1000}
     optimiser = torch.optim.Adam([model_depths], lr=lr, fused=True)
     lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))

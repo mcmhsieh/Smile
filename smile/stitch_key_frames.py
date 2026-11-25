@@ -19,6 +19,7 @@ import pathlib
 import shutil
 import pickle
 import collections
+import concurrent.futures
 
 import numpy as np
 import scipy
@@ -244,6 +245,9 @@ if __name__ == '__main__':
     # only insert tuple of non-mutating ndarrays and immutable values
     cross_stitch_disparity_confidence_maps = {}
 
+    graphed_loss_fn_num_frames = 0
+    graphed_loss_fn_num_points = 0
+
     processed_frame_idxs = []
 
     for current_frame_idx, input_filepath in enumerate(key_frames_filepaths, start=1):
@@ -312,7 +316,7 @@ if __name__ == '__main__':
         mask = (np.isfinite(xsp) & np.isfinite(ysp) & np.isfinite(xsn) & np.isfinite(ysn)
                 & (xsp >= margin) & (xsp < img.shape[1] - margin) & (ysp >= margin) & (ysp < img.shape[0] - margin)
                 & (xsn >= margin) & (xsn < img.shape[1] - margin) & (ysn >= margin) & (ysn < img.shape[0] - margin))
-        corres_idxs = np.where(mask)[0]
+        corres_idxs = np.where(mask)[0].astype(int)
 
         print('num corresponding flow points', len(corres_idxs))
 
@@ -435,7 +439,7 @@ if __name__ == '__main__':
             threshold_target = torch.tensor(3.0, dtype=torch.float32)
             gamma_softplus_alpha = torch.tensor(2, dtype=torch.float32)
 
-            def loss_fn(temperature):
+            def loss_fn(model_rvec, model_tvec, temperature):
                 # Select Rodrigues formula with fast=True
                 R = pytorch3d.transforms.axis_angle_to_matrix(model_rvec, fast=True)[0, :, :]
                 model_tvec_normed = model_tvec / torch.clamp(torch.norm(model_tvec), 1e-6, np.inf)
@@ -473,10 +477,17 @@ if __name__ == '__main__':
                 return (torch.sum(epipolar_line_losses * xysn_weights[:2, :])
                         + 0.1 * epipolar_line_losses.shape[1] * torch.pow(model_tvec_normed[2, 0], 2))
 
+            graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn,
+                                                                sample_args=(model_rvec, model_tvec,
+                                                                             torch.tensor(0, dtype=torch.float32)))
             lr = 0.005
             num_steps = 3000
             convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-            optimiser = torch.optim.Adam([model_rvec, model_tvec], lr=lr)
+            # Selecting fused=True raises RuntimeError: params, grads, exp_avgs, and exp_avg_sqs must have same dtype, device, and layout
+            # https://github.com/pytorch/pytorch/issues/110758
+            # https://github.com/pytorch/pytorch/issues/106951
+            # https://github.com/pytorch/pytorch/pull/107984
+            optimiser = torch.optim.Adam([model_rvec, model_tvec], lr=lr, fused=False)
             lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                        * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
             scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
@@ -484,7 +495,7 @@ if __name__ == '__main__':
             for optim_step in range(num_steps):
                 optimiser.zero_grad()
                 temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-                loss = loss_fn(temperature)
+                loss = graphed_loss_fn(model_rvec, model_tvec, torch.tensor(temperature, dtype=torch.float32))
                 loss.backward()
                 optimiser.step()
                 scheduler.step()
@@ -926,29 +937,11 @@ if __name__ == '__main__':
             image_to_triangulated_point_idxs = key_frame_image_triangulated_point_idxs[current_frame_idx - 1]
             image_to_triangulated_point_idxs[new_inlier_triangulation_idxs] = stitched_triangulated_points.shape[0] - new_triangulated_points.shape[0] + np.arange(new_triangulated_points.shape[0])
 
-            camera_fxy = torch.tensor(np.diag(camera_matrix[:2, :2])[:, None], dtype=torch.float32)
-            camera_cxy = torch.tensor(camera_matrix[:2, 2:], dtype=torch.float32)
-
             inv_camera_extrinsic = np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx])
             R = inv_camera_extrinsic[:3, :3]
             t = inv_camera_extrinsic[:3, 3:]
             model_triangulated_points_numpy = R @ stitched_triangulated_points[:, :3].T + t
             model_triangulated_normals_numpy = R @ stitched_triangulated_normals
-
-            # Although including all the camera extrinsics introduces redundant degrees of freedom,
-            # this appears to help make the optimisation unbiased to each camera extrinsic.
-            # Previously when the first frame was fixed to the origin/axes, it appeared to be susceptible
-            # to higher projection errors especially for larger convergence criteria thresholds,
-            # perhaps because the gradient graph for the first frame is far more convoluted.
-            rvecs = []
-            tvecs = []
-            for camera_extrinsic in key_frame_camera_extrinsics:
-                rvec, jacobian = cv2.Rodrigues(camera_extrinsic[:3, :3])
-                tvec = camera_extrinsic[:3, 3:]
-                rvecs.append(rvec.flatten())
-                tvecs.append(tvec)
-            model_rvecs = torch.tensor(np.array(rvecs), dtype=torch.float32, requires_grad=True)
-            model_tvecs = torch.tensor(np.array(tvecs), dtype=torch.float32, requires_grad=True)
 
             # TODO: try higher confidence map threshold
 
@@ -1024,56 +1017,102 @@ if __name__ == '__main__':
             print('len(bundle_triangulated_point_idxs)', len(bundle_triangulated_point_idxs),
                   'of len(triangulated_point_mapping_counts)', len(triangulated_point_mapping_counts))
 
-            model_triangulated_points = torch.tensor(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
-            bundle_image_points = torch.tensor(triangulated_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
+            bundle_num_points = len(bundle_triangulated_point_idxs)
+            graph_projection_error_loss_fn = (len(key_frame_camera_extrinsics) > graphed_loss_fn_num_frames
+                                              or bundle_num_points > graphed_loss_fn_num_points)
+            if graph_projection_error_loss_fn:
+                graphed_loss_fn_num_frames = len(key_frame_camera_extrinsics) + 4
+                graphed_loss_fn_num_points = int(max(bundle_num_points * 1.05 * (graphed_loss_fn_num_frames - 1) / (len(key_frame_camera_extrinsics) - 1),
+                                                     bundle_num_points + len(xsg) / 5 * (graphed_loss_fn_num_frames - len(key_frame_camera_extrinsics))))
+                print('graphed_loss_fn_num_frames, graphed_loss_fn_num_points', graphed_loss_fn_num_frames, graphed_loss_fn_num_points)
+
+                camera_fxy = torch.tensor(np.diag(camera_matrix[:2, :2])[:, None], dtype=torch.float32)
+                camera_cxy = torch.tensor(camera_matrix[:2, 2:], dtype=torch.float32)
+
+                model_rvecs = torch.zeros((graphed_loss_fn_num_frames, 3), dtype=torch.float32, requires_grad=True)
+                model_tvecs = torch.zeros((graphed_loss_fn_num_frames, 3, 1), dtype=torch.float32, requires_grad=True)
+
+                model_triangulated_points = torch.zeros((3, graphed_loss_fn_num_points), dtype=torch.float32, requires_grad=True)
+                bundle_image_points = torch.zeros((graphed_loss_fn_num_frames, 2, graphed_loss_fn_num_points), dtype=torch.float32)
+                bundle_image_points_weights = torch.zeros((graphed_loss_fn_num_frames, 6, graphed_loss_fn_num_points), dtype=torch.float32)
+                #threshold_target = torch.tensor(3.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
+                threshold_target = torch.tensor(10.0, dtype=torch.float32)
+                #gamma_softplus_alpha = torch.tensor(2.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
+                gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
+
+                def calc_projected_image_points(model_rvecs, model_tvecs, model_triangulated_points):
+                    # Select Rodrigues formula with fast=True
+                    model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
+                    object_points = model_Rs @ model_triangulated_points + model_tvecs
+
+                    xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
+                    yd = object_points[:, 1:2, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
+
+                    return torch.cat([xd, yd], dim=1) * camera_fxy + camera_cxy
+
+                def projection_error_loss_fn(model_rvecs, model_tvecs, model_triangulated_points, temperature):
+                    bundle_projected_points = calc_projected_image_points(model_rvecs, model_tvecs, model_triangulated_points)
+                    projection_offset = bundle_projected_points - bundle_image_points
+                    projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
+                                                  torch.sum(projection_offset * bundle_image_points_weights[:, 4:, :], dim=1)], dim=1)
+                    if False:
+                        projection_err_losses = projection_err2
+                    elif False:
+                        # softplus curved region spans from approximately -4.5 to 0.5
+                        # starts from around -4.5 with a span of 5.0
+                        projection_err_losses = torch.nn.functional.softplus(torch.sqrt(projection_err2) / 3.0 * 5.0 - 4.5)
+                    else:
+                        # Heavy tailed bell shaped function based on Student's t-distribution with v = 0
+                        # y=1/sqrt(1+x**2) has a knee point at x ~ 3.0 beyond which it slowly converges to 0, e.g. [1.0, 0.71], [3.0, 0.32], [9.9, 0.1]
+                        # d(1-y)/dx (the loss function's virtual spring tension) rises rapidly from zero, peaks at x ~ 0.71 and then tends to -1/x**2,
+                        # e.g. [0, 0], [0.71, 0.38], [3, 0.1], [9.9, 0.01], so the virtual spring is elastic x < 0.71 beyond which it becomes plastic.
+                        # Note that when x is scaled (e.g. by the threshold value) then the gradients d(1-y)/dx are naturally inversely scaled.
+                        # The gradients could be made invariant to x-scaling by using y=s/sqrt(1+(x/s)**2), but since that just scales the loss magnitude
+                        # that would not make any difference to gradient descent based optimisation. We also have to be aware that Adam's RMSProp and Momentum
+                        # states can be adversely disrupted by abrupt changes to the loss function.
+                        threshold = threshold_target * (1 - temperature) + 100.0 * temperature
+                        #projection_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(projection_err * 3.0 / threshold, 2))
+                        projection_err_losses = gamma_softplus(projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
+
+                    return torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
+
+                graphed_projection_error_loss_fn = torch.cuda.make_graphed_callables(projection_error_loss_fn,
+                                                                                     sample_args=(model_rvecs, model_tvecs,
+                                                                                                  model_triangulated_points,
+                                                                                                  torch.tensor(0, dtype=torch.float32)))
+
+            # Although including all the camera extrinsics introduces redundant degrees of freedom,
+            # this appears to help make the optimisation unbiased to each camera extrinsic.
+            # Previously when the first frame was fixed to the origin/axes, it appeared to be susceptible
+            # to higher projection errors especially for larger convergence criteria thresholds,
+            # perhaps because the gradient graph for the first frame is far more convoluted.
+            rvecs = []
+            tvecs = []
+            for camera_extrinsic in key_frame_camera_extrinsics:
+                rvec, jacobian = cv2.Rodrigues(camera_extrinsic[:3, :3])
+                tvec = camera_extrinsic[:3, 3:]
+                rvecs.append(rvec.flatten())
+                tvecs.append(tvec)
+            num_key_frame_camera_extrinsics = len(key_frame_camera_extrinsics)
+            key_frame_padding = graphed_loss_fn_num_frames - num_key_frame_camera_extrinsics
+            with torch.no_grad():
+                model_rvecs.copy_(torch.tensor(np.pad(np.array(rvecs), pad_width=((0, key_frame_padding), (0, 0))), dtype=torch.float32))
+                model_tvecs.copy_(torch.tensor(np.pad(np.array(tvecs), pad_width=((0, key_frame_padding), (0, 0), (0, 0))), dtype=torch.float32))
+
+            triangulated_point_padding = graphed_loss_fn_num_points - bundle_num_points
+            assert triangulated_point_padding >= 0
+            pad_width = ((0, key_frame_padding), (0, 0), (0, triangulated_point_padding))
+            with torch.no_grad():
+                model_triangulated_points.copy_(torch.tensor(np.pad(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], pad_width=pad_width[1:]), dtype=torch.float32))
+            bundle_image_points.copy_(torch.tensor(np.pad(triangulated_image_points[:, :, bundle_triangulated_point_idxs], pad_width=pad_width), dtype=torch.float32))
             bundle_image_points[~torch.isfinite(bundle_image_points)] = 0
-            bundle_image_points_weights = torch.tensor(triangulated_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
-            #threshold_target = torch.tensor(3.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
-            threshold_target = torch.tensor(10.0, dtype=torch.float32)
-            #gamma_softplus_alpha = torch.tensor(2.0 + np.log2(triangulated_point_mapping_counts[bundle_triangulated_point_idxs]), dtype=torch.float32)
-            gamma_softplus_alpha = torch.tensor(6, dtype=torch.float32)
+            bundle_image_points_weights.copy_(torch.tensor(np.pad(triangulated_image_points_weights[:, :, bundle_triangulated_point_idxs], pad_width=pad_width), dtype=torch.float32))
 
-            def calc_projected_image_points():
-                # Select Rodrigues formula with fast=True
-                model_Rs = pytorch3d.transforms.axis_angle_to_matrix(model_rvecs, fast=True)
-                object_points = model_Rs @ model_triangulated_points + model_tvecs
-
-                xd = object_points[:, 0:1, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
-                yd = object_points[:, 1:2, :] / torch.clamp(object_points[:, 2:3, :], 1e-3, np.inf)
-
-                return torch.cat([xd, yd], dim=1) * camera_fxy + camera_cxy
-
-            def loss_fn(temperature):
-                bundle_projected_points = calc_projected_image_points()
-                projection_offset = bundle_projected_points - bundle_image_points
-                projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
-                                              torch.sum(projection_offset * bundle_image_points_weights[:, 4:, :], dim=1)], dim=1)
-                if False:
-                    projection_err_losses = projection_err2
-                elif False:
-                    # softplus curved region spans from approximately -4.5 to 0.5
-                    # starts from around -4.5 with a span of 5.0
-                    projection_err_losses = torch.nn.functional.softplus(torch.sqrt(projection_err2) / 3.0 * 5.0 - 4.5)
-                else:
-                    # Heavy tailed bell shaped function based on Student's t-distribution with v = 0
-                    # y=1/sqrt(1+x**2) has a knee point at x ~ 3.0 beyond which it slowly converges to 0, e.g. [1.0, 0.71], [3.0, 0.32], [9.9, 0.1]
-                    # d(1-y)/dx (the loss function's virtual spring tension) rises rapidly from zero, peaks at x ~ 0.71 and then tends to -1/x**2,
-                    # e.g. [0, 0], [0.71, 0.38], [3, 0.1], [9.9, 0.01], so the virtual spring is elastic x < 0.71 beyond which it becomes plastic.
-                    # Note that when x is scaled (e.g. by the threshold value) then the gradients d(1-y)/dx are naturally inversely scaled.
-                    # The gradients could be made invariant to x-scaling by using y=s/sqrt(1+(x/s)**2), but since that just scales the loss magnitude
-                    # that would not make any difference to gradient descent based optimisation. We also have to be aware that Adam's RMSProp and Momentum
-                    # states can be adversely disrupted by abrupt changes to the loss function.
-                    threshold = threshold_target * (1 - temperature) + 100.0 * temperature
-                    #projection_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(projection_err * 3.0 / threshold, 2))
-                    projection_err_losses = gamma_softplus(projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
-
-                return torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
-
-            def bundle_adjustment():
+            def bundle_adjustment(model_rvecs, model_tvecs, model_triangulated_points, projection_error_loss_fn):
                 lr = 0.005
                 num_steps = 3000
                 convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-                optimiser = torch.optim.Adam([model_rvecs, model_tvecs, model_triangulated_points], lr=lr)
+                optimiser = torch.optim.Adam([model_rvecs, model_tvecs, model_triangulated_points], lr=lr, fused=True)
                 lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                            * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
                 scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
@@ -1081,7 +1120,8 @@ if __name__ == '__main__':
                 for optim_step in range(num_steps):
                     optimiser.zero_grad()
                     temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-                    loss = loss_fn(temperature)
+                    loss = projection_error_loss_fn(model_rvecs, model_tvecs, model_triangulated_points,
+                                                    torch.tensor(temperature, dtype=torch.float32))
                     loss.backward()
                     optimiser.step()
                     scheduler.step()
@@ -1102,6 +1142,8 @@ if __name__ == '__main__':
                     R, jacobian = cv2.Rodrigues(rvec)
                     t = tvec
                     key_frame_camera_extrinsics.append(np.block([[R, t], [0, 0, 0, 1]]))
+                    if len(key_frame_camera_extrinsics) >= num_key_frame_camera_extrinsics:
+                        break
 
                 camera_transform = key_frame_camera_extrinsics[current_frame_idx] @ np.linalg.inv(key_frame_camera_extrinsics[current_frame_idx - 1])
                 R = camera_transform[:3, :3]
@@ -1119,18 +1161,18 @@ if __name__ == '__main__':
                     current_camera_extrinsic = key_frame_camera_extrinsics[current_frame_idx]
                     R = current_camera_extrinsic[:3, :3]
                     t = current_camera_extrinsic[:3, 3:]
-                    stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points.numpy(force=True) + t).T
+                    stitched_triangulated_points[bundle_triangulated_point_idxs, :3] = (R @ model_triangulated_points[:, :bundle_num_points].numpy(force=True) + t).T
                 else:
                     first_camera_extrinsic = key_frame_camera_extrinsics[0]
                     R = first_camera_extrinsic[:3, :3]
                     t = first_camera_extrinsic[:3, 3:]
-                    model_triangulated_points_numpy = R @ model_triangulated_points.numpy(force=True) + t
+                    model_triangulated_points_numpy = R @ model_triangulated_points[:, :bundle_num_points].numpy(force=True) + t
 
                     key_frame_camera_extrinsics[:] = [camera_extrinsic @ np.linalg.inv(first_camera_extrinsic)
                                                       for camera_extrinsic in key_frame_camera_extrinsics]
 
                     scaling_factors = []
-                    for image_points_weights_magn, camera_extrinsic in zip(torch.norm(bundle_image_points_weights[:, :2, :], dim=1).numpy(force=True),
+                    for image_points_weights_magn, camera_extrinsic in zip(torch.norm(bundle_image_points_weights[:num_key_frame_camera_extrinsics, :2, :bundle_num_points], dim=1).numpy(force=True),
                                                                            key_frame_camera_extrinsics):
                         triangulated_points = camera_extrinsic[:3, :3] @ model_triangulated_points_numpy[:, image_points_weights_magn >= 1e-2] + camera_extrinsic[:3, 3:]
 
@@ -1245,6 +1287,10 @@ if __name__ == '__main__':
                         triangulated_normal_weights)
 
             def calc_common_view_frustum(current_frame_idx, cross_frame_idx):
+                print_output = []
+                def print(*args, **kwargs):
+                    print_output.append((args, kwargs))
+
                 #cross_motion_blur = np.max([key_frame_motion_blurs[idx] for idx in [cross_frame_idx, current_frame_idx]])
 
                 cross_camera_extrinsic = key_frame_camera_extrinsics[cross_frame_idx]
@@ -1347,7 +1393,8 @@ if __name__ == '__main__':
                 cross_image_geometry = shapely.MultiPoint(uvs.T).convex_hull
                 projected_cone_coverage = cross_image_geometry.intersection(projected_points_geometry).area / cross_image_geometry.area
                 if projected_cone_coverage < 0.5:
-                    return ('projected_cone_coverage', projected_cone_coverage),
+                    print('projected_cone_coverage', projected_cone_coverage)
+                    return print_output,
 
                 """
                 @param cameraMatrix1 First camera intrinsic matrix.
@@ -1476,10 +1523,12 @@ if __name__ == '__main__':
                     if np.all(rect_proximity >= 1.0):
                         break
                 else:
-                    return ('img_size_trim', img_size_trim),
+                    print('img_size_trim', img_size_trim)
+                    return print_output,
 
                 if overtrimmed_common_view_frustum:
-                    return ('overtrimmed_common_view_frustum, img_size_trim', overtrimmed_common_view_frustum, img_size_trim),
+                    print('overtrimmed_common_view_frustum, img_size_trim', overtrimmed_common_view_frustum, img_size_trim)
+                    return print_output,
 
                 # common_view_frustum_xyzs are the vertices of the convex hull which can
                 # be used to calculate the extremities of the geometry.
@@ -1507,7 +1556,8 @@ if __name__ == '__main__':
                 common_view_frustum_weighted_inlier_ratio = (np.sum(common_view_frustum_sample_points_weights[common_view_frustum_inlier_mask])
                                                              / np.sum(common_view_frustum_sample_points_weights))
                 if common_view_frustum_weighted_inlier_ratio < 0.2:
-                    return ('common_view_frustum_weighted_inlier_ratio', common_view_frustum_weighted_inlier_ratio),
+                    print('common_view_frustum_weighted_inlier_ratio', common_view_frustum_weighted_inlier_ratio)
+                    return print_output,
 
                 common_view_frustum_sample_points1 = R1 @ common_view_frustum_sample_points
                 common_view_frustum_sample_points2 = R2 @ (R @ common_view_frustum_sample_points + t)
@@ -1565,7 +1615,8 @@ if __name__ == '__main__':
 
                 """
                 if img_size_trim > max(img.shape[:2]) / 4 or rect_proximity < 1.0 or disparity_spread < 16 * disparity_map_zoom or disparity_spread > 384 * disparity_map_zoom:
-                    return ('img_size_trim, rect_proximity, disparity_spread', img_size_trim, rect_proximity, disparity_spread),
+                    print('img_size_trim, rect_proximity, disparity_spread', img_size_trim, rect_proximity, disparity_spread)
+                    return print_output,
                 """
 
                 # Noting that positive disparity is in the negative x-axis direction relative to the reference (left) image,
@@ -1574,16 +1625,18 @@ if __name__ == '__main__':
                 #    to: x - disparity_lower
                 # Skip disparity computation if the search range falls entirely outside the right image for over half of the left image pixels.
                 if 0.5 * newImageSize[0] - disparity_upper > newImageSize[0] or 0.5 * newImageSize[0] - disparity_lower < 0:
-                    return ('disparity_lower, disparity_upper', disparity_lower, disparity_upper),
+                    print('disparity_lower, disparity_upper', disparity_lower, disparity_upper)
+                    return print_output,
                 # Skip disparity computation if the search range exceeds the width of the image.
                 # There is potentially much more occlusion, dissimilar lighting between the images,
                 # and a smaller resulting area of useful disparity.
                 # For a baseline b = 3mm, fx * disparity_map_zoom = 360 * 0.25 = 90, and a depth z range of [5mm, 30mm],
                 # the disparty b * fx * disparity_map_zoom / z range is [3 * 90 / 30, 3 * 90 / 5] = [9, 54]
                 if disparity_spread > newImageSize[0]:
-                    return ('disparity_spread', disparity_spread),
+                    print('disparity_spread', disparity_spread)
+                    return print_output,
 
-                return (None,
+                return (print_output,
                         cross_camera_extrinsic, ref_img, ref_gray, ref_img_mask, cross_image_points, cross_triangulated_idxs_to_image_idxs,
                         cross_unmatched_triangulated_idxs, cross_triangulated_image_points, cross_unmatched_triangulated_image_points,
                         current_triangulated_image_points,
@@ -1610,7 +1663,9 @@ if __name__ == '__main__':
 
             (current_camera_extrinsic,
              current_triangulated_idxs, current_triangulated_idxs_to_image_idxs,
-             triangulated_normal_weights) = bundle_adjustment()
+             triangulated_normal_weights) = bundle_adjustment(model_rvecs, model_tvecs,
+                                                              model_triangulated_points,
+                                                              graphed_projection_error_loss_fn)
 
             # Execute a number of ECC transform iterations for all the cross frames against the current frame,
             # and then rerun the bundle adjustment optimisation to update the camera extrinsics using an augmented
@@ -1620,14 +1675,16 @@ if __name__ == '__main__':
 
             cross_warp_triangulated_points = {}
 
-            for cross_frame_idx in range(current_frame_idx):
-                print('cross_frame_idx', cross_frame_idx)
+            def ecc_transform_cross_warp(cross_frame_idx):
+                print_output = []
+                def print(*args, **kwargs):
+                    print_output.append((args, kwargs))
 
-                results = calc_common_view_frustum(current_frame_idx, cross_frame_idx)
-                limitation = results[0]
-                if limitation is not None:
-                    print(*limitation)
-                    continue
+                result = calc_common_view_frustum(current_frame_idx, cross_frame_idx)
+                sub_print_output, result = result[0], result[1:]
+                print_output.extend(sub_print_output)
+                if len(result) == 0:
+                    return print_output,
                 (cross_camera_extrinsic, ref_img, ref_gray, ref_img_mask, cross_image_points, cross_triangulated_idxs_to_image_idxs,
                  cross_unmatched_triangulated_idxs, cross_triangulated_image_points, cross_unmatched_triangulated_image_points,
                  current_triangulated_image_points,
@@ -1635,7 +1692,7 @@ if __name__ == '__main__':
                  common_view_frustum_sample_points,
                  common_view_frustum_sample_points_weights,
                  common_view_frustum_inlier_mask,
-                 disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = results[1:]
+                 disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = result
 
 
                 # Fit a linear model to depth values of triangulated points vs their projection onto the reference cross frame to provide
@@ -1965,7 +2022,7 @@ if __name__ == '__main__':
 
                 translation, reflection, rotation_angle, scaling, shear, out_of_bounds = decompose_warp_matrix(warpMatrix)
                 if out_of_bounds:
-                    continue
+                    return print_output,
 
                 sample_weight_mask = sample_weight > 0.1 * np.median(sample_weight)
 
@@ -2025,10 +2082,6 @@ if __name__ == '__main__':
                 gray_flow_xys = gray_flow_xys[:, cross_flow_mask]
                 gray_warp_map_xys = gray_warp_map_xys[cross_flow_mask, :]
                 cross_warp_triangulated_point_idxs = np.arange(len(triangulated_idxs_weights))[inlier_mask][xys_mask][cross_flow_mask]
-                ref_gray_points = cross_triangulated_points[:, cross_warp_triangulated_point_idxs]
-                ref_gray_triangulated_idxs_weights = triangulated_idxs_weights[cross_warp_triangulated_point_idxs]
-
-                cross_warp_triangulated_points[cross_frame_idx] = (gray_flow_xys, cross_warp_triangulated_point_idxs)
 
                 if False:
                     current_projected_points = camera_matrix @ current_triangulated_points[:, inlier_mask][:, xys_mask][:, cross_flow_mask]
@@ -2101,6 +2154,39 @@ if __name__ == '__main__':
                     plt.tight_layout()
                     stash_fig_page()
 
+                return print_output, gray_flow_xys, cross_warp_triangulated_point_idxs
+
+            if exec_mode == 'debug_key_frame' and current_frame_idx == debug_key_frame_idx:
+                for cross_frame_idx in range(current_frame_idx):
+                    print('cross_frame_idx', cross_frame_idx)
+                    result = ecc_transform_cross_warp(cross_frame_idx)
+                    print_output, result = result[0], result[1:]
+                    for args, kwargs in print_output:
+                        print(*args, **kwargs)
+                    if len(result) > 0:
+                        gray_flow_xys, cross_warp_triangulated_point_idxs = result
+                        cross_warp_triangulated_points[cross_frame_idx] = (gray_flow_xys, cross_warp_triangulated_point_idxs)
+
+            else:
+                # https://docs.python.org/3.11/library/concurrent.futures.html#concurrent.futures.ThreadPoolExecutor
+                # Default value of max_workers is min(32, os.cpu_count() + 4).
+                # This default value preserves at least 5 workers for I/O bound tasks.
+                # It utilizes at most 32 CPU cores for CPU bound tasks which release the GIL.
+                # And it avoids using very large resources implicitly on many-core machines.
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    futures = {cross_frame_idx: executor.submit(ecc_transform_cross_warp, cross_frame_idx)
+                               for cross_frame_idx in range(current_frame_idx)}
+
+                    for cross_frame_idx, future in futures.items():
+                        print('cross_frame_idx', cross_frame_idx)
+                        result = future.result()
+                        print_output, result = result[0], result[1:]
+                        for args, kwargs in print_output:
+                            print(*args, **kwargs)
+                        if len(result) > 0:
+                            gray_flow_xys, cross_warp_triangulated_point_idxs = result
+                            cross_warp_triangulated_points[cross_frame_idx] = (gray_flow_xys, cross_warp_triangulated_point_idxs)
+
 
             # Augment the loss function with projection errors in the current frame for unmatched triangulated points
             # with ECC transform refined mappings between each cross frame and the current frame
@@ -2165,57 +2251,90 @@ if __name__ == '__main__':
             warp_image_points = np.array(warp_image_points)
             warp_image_points_weights = np.array(warp_image_points_weights)
 
-            model_triangulated_points = torch.tensor(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], dtype=torch.float32, requires_grad=True)
-            warp_image_points = torch.tensor(warp_image_points[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
-            warp_image_points[~torch.isfinite(warp_image_points)] = 0
-            warp_image_points_weights = torch.tensor(warp_image_points_weights[:, :, bundle_triangulated_point_idxs], dtype=torch.float32)
+            if graph_projection_error_loss_fn:
+                warp_model_rvecs = torch.zeros((graphed_loss_fn_num_frames, 3), dtype=torch.float32, requires_grad=True)
+                warp_model_tvecs = torch.zeros((graphed_loss_fn_num_frames, 3, 1), dtype=torch.float32, requires_grad=True)
 
-            def loss_fn(temperature):
-                bundle_projected_points = calc_projected_image_points()
-                projection_offset = bundle_projected_points - bundle_image_points
-                projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
-                                              torch.sum(projection_offset * bundle_image_points_weights[:, 4:, :], dim=1)], dim=1)
-                warp_projection_offset = bundle_projected_points[current_frame_idx, :, :] - warp_image_points
-                warp_projection_err = torch.stack([torch.sum(warp_projection_offset * warp_image_points_weights[:, 2:4, :], dim=1),
-                                                   torch.sum(warp_projection_offset * warp_image_points_weights[:, 4:, :], dim=1)], dim=1)
-                if False:
-                    projection_err_losses = projection_err2
-                elif False:
-                    # softplus curved region spans from approximately -4.5 to 0.5
-                    # starts from around -4.5 with a span of 5.0
-                    projection_err_losses = torch.nn.functional.softplus(torch.sqrt(projection_err2) / 3.0 * 5.0 - 4.5)
-                else:
-                    # Heavy tailed bell shaped function based on Student's t-distribution with v = 0
-                    # y=1/sqrt(1+x**2) has a knee point at x ~ 3.0 beyond which it slowly converges to 0, e.g. [1.0, 0.71], [3.0, 0.32], [9.9, 0.1]
-                    # d(1-y)/dx (the loss function's virtual spring tension) rises rapidly from zero, peaks at x ~ 0.71 and then tends to -1/x**2,
-                    # e.g. [0, 0], [0.71, 0.38], [3, 0.1], [9.9, 0.01], so the virtual spring is elastic x < 0.71 beyond which it becomes plastic.
-                    # Note that when x is scaled (e.g. by the threshold value) then the gradients d(1-y)/dx are naturally inversely scaled.
-                    # The gradients could be made invariant to x-scaling by using y=s/sqrt(1+(x/s)**2), but since that just scales the loss magnitude
-                    # that would not make any difference to gradient descent based optimisation. We also have to be aware that Adam's RMSProp and Momentum
-                    # states can be adversely disrupted by abrupt changes to the loss function.
-                    threshold = threshold_target * (1 - temperature) + 100.0 * temperature
-                    #projection_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(projection_err * 3.0 / threshold, 2))
-                    projection_err_losses = gamma_softplus(projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
-                    warp_projection_err_losses = gamma_softplus(warp_projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
+                warp_model_triangulated_points = torch.zeros((3, graphed_loss_fn_num_points), dtype=torch.float32, requires_grad=True)
+                warp_model_image_points = torch.zeros((graphed_loss_fn_num_frames - 1, 2, graphed_loss_fn_num_points), dtype=torch.float32)
+                warp_model_image_points_weights = torch.zeros((graphed_loss_fn_num_frames - 1, 6, graphed_loss_fn_num_points), dtype=torch.float32)
 
-                return (torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
-                        + torch.sum(warp_projection_err_losses * warp_image_points_weights[:, :2, :]))
+                def warp_projection_error_loss_fn(model_rvecs, model_tvecs, model_triangulated_points, temperature):
+                    bundle_projected_points = calc_projected_image_points(model_rvecs, model_tvecs, model_triangulated_points)
+                    projection_offset = bundle_projected_points - bundle_image_points
+                    projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
+                                                  torch.sum(projection_offset * bundle_image_points_weights[:, 4:, :], dim=1)], dim=1)
+                    warp_projection_offset = bundle_projected_points[current_frame_idx, :, :] - warp_model_image_points
+                    warp_projection_err = torch.stack([torch.sum(warp_projection_offset * warp_model_image_points_weights[:, 2:4, :], dim=1),
+                                                       torch.sum(warp_projection_offset * warp_model_image_points_weights[:, 4:, :], dim=1)], dim=1)
+                    if False:
+                        projection_err_losses = projection_err2
+                    elif False:
+                        # softplus curved region spans from approximately -4.5 to 0.5
+                        # starts from around -4.5 with a span of 5.0
+                        projection_err_losses = torch.nn.functional.softplus(torch.sqrt(projection_err2) / 3.0 * 5.0 - 4.5)
+                    else:
+                        # Heavy tailed bell shaped function based on Student's t-distribution with v = 0
+                        # y=1/sqrt(1+x**2) has a knee point at x ~ 3.0 beyond which it slowly converges to 0, e.g. [1.0, 0.71], [3.0, 0.32], [9.9, 0.1]
+                        # d(1-y)/dx (the loss function's virtual spring tension) rises rapidly from zero, peaks at x ~ 0.71 and then tends to -1/x**2,
+                        # e.g. [0, 0], [0.71, 0.38], [3, 0.1], [9.9, 0.01], so the virtual spring is elastic x < 0.71 beyond which it becomes plastic.
+                        # Note that when x is scaled (e.g. by the threshold value) then the gradients d(1-y)/dx are naturally inversely scaled.
+                        # The gradients could be made invariant to x-scaling by using y=s/sqrt(1+(x/s)**2), but since that just scales the loss magnitude
+                        # that would not make any difference to gradient descent based optimisation. We also have to be aware that Adam's RMSProp and Momentum
+                        # states can be adversely disrupted by abrupt changes to the loss function.
+                        threshold = threshold_target * (1 - temperature) + 100.0 * temperature
+                        #projection_err_losses = 1 - 1 / torch.sqrt(1 + torch.pow(projection_err * 3.0 / threshold, 2))
+                        projection_err_losses = gamma_softplus(projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
+                        warp_projection_err_losses = gamma_softplus(warp_projection_err, threshold=threshold, alpha=gamma_softplus_alpha, relative_outer_gradient=0.01)
 
+                    return (torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
+                            + torch.sum(warp_projection_err_losses * warp_model_image_points_weights[:, :2, :]))
+
+                graphed_warp_projection_error_loss_fn = torch.cuda.make_graphed_callables(warp_projection_error_loss_fn,
+                                                                                          sample_args=(warp_model_rvecs, warp_model_tvecs,
+                                                                                                       warp_model_triangulated_points,
+                                                                                                       torch.tensor(0, dtype=torch.float32)))
+
+            rvecs = []
+            tvecs = []
+            for camera_extrinsic in key_frame_camera_extrinsics:
+                rvec, jacobian = cv2.Rodrigues(camera_extrinsic[:3, :3])
+                tvec = camera_extrinsic[:3, 3:]
+                rvecs.append(rvec.flatten())
+                tvecs.append(tvec)
+            num_key_frame_camera_extrinsics = len(key_frame_camera_extrinsics)
+            key_frame_padding = graphed_loss_fn_num_frames - num_key_frame_camera_extrinsics
+            with torch.no_grad():
+                warp_model_rvecs.copy_(torch.tensor(np.pad(np.array(rvecs), pad_width=((0, key_frame_padding), (0, 0))), dtype=torch.float32))
+                warp_model_tvecs.copy_(torch.tensor(np.pad(np.array(tvecs), pad_width=((0, key_frame_padding), (0, 0), (0, 0))), dtype=torch.float32))
+
+            triangulated_point_padding = graphed_loss_fn_num_points - bundle_num_points
+            assert triangulated_point_padding >= 0
+            pad_width = ((0, key_frame_padding), (0, 0), (0, triangulated_point_padding))
+            with torch.no_grad():
+                warp_model_triangulated_points.copy_(torch.tensor(np.pad(model_triangulated_points_numpy[:, bundle_triangulated_point_idxs], pad_width=pad_width[1:]), dtype=torch.float32))
+            warp_model_image_points.copy_(torch.tensor(np.pad(warp_image_points[:, :, bundle_triangulated_point_idxs], pad_width=pad_width), dtype=torch.float32))
+            warp_model_image_points[~torch.isfinite(warp_model_image_points)] = 0
+            warp_model_image_points_weights.copy_(torch.tensor(np.pad(warp_image_points_weights[:, :, bundle_triangulated_point_idxs], pad_width=pad_width), dtype=torch.float32))
 
             (current_camera_extrinsic,
              current_triangulated_idxs, current_triangulated_idxs_to_image_idxs,
-             triangulated_normal_weights) = bundle_adjustment()
+             triangulated_normal_weights) = bundle_adjustment(warp_model_rvecs, warp_model_tvecs,
+                                                              warp_model_triangulated_points,
+                                                              graphed_warp_projection_error_loss_fn)
 
             retrace_triangulated_candidates = collections.defaultdict(dict)
 
-            for cross_frame_idx in range(current_frame_idx):
-                print('cross_frame_idx', cross_frame_idx)
+            def stereo_sgbm_cross_warp(cross_frame_idx):
+                print_output = []
+                def print(*args, **kwargs):
+                    print_output.append((args, kwargs))
 
-                results = calc_common_view_frustum(current_frame_idx, cross_frame_idx)
-                limitation = results[0]
-                if limitation is not None:
-                    print(*limitation)
-                    continue
+                result = calc_common_view_frustum(current_frame_idx, cross_frame_idx)
+                sub_print_output, result = result[0], result[1:]
+                print_output.extend(sub_print_output)
+                if len(result) == 0:
+                    return print_output,
                 (cross_camera_extrinsic, ref_img, ref_gray, ref_img_mask, cross_image_points, cross_triangulated_idxs_to_image_idxs,
                  cross_unmatched_triangulated_idxs, cross_triangulated_image_points, cross_unmatched_triangulated_image_points,
                  current_triangulated_image_points,
@@ -2223,7 +2342,7 @@ if __name__ == '__main__':
                  common_view_frustum_sample_points,
                  common_view_frustum_sample_points_weights,
                  common_view_frustum_inlier_mask,
-                 disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = results[1:]
+                 disparity_map_zoom, fxy, cy, cx1, cx2, dx12s, newImageSize, disparity_spread) = result
 
                 # StereoSGBM requires num_disparities to be a multiple of 16.
                 if True:
@@ -2775,24 +2894,15 @@ if __name__ == '__main__':
                 cross_unmatched_triangulated_confidence = interp((cross_unmatched_triangulated_image_points[:, 1],
                                                                   cross_unmatched_triangulated_image_points[:, 0])) * triangulated_normal_weights[cross_unmatched_triangulated_idxs]
 
-                for triangulated_idx, current_image_point, confidence in zip(cross_unmatched_triangulated_idxs,
-                                                                             cross_unmatched_triangulated_current_image_points,
-                                                                             cross_unmatched_triangulated_confidence):
-                    record = np.array([confidence, current_image_point.real, current_image_point.imag])
-                    if np.all(np.isfinite(record)):
-                        retrace_triangulated_candidates[triangulated_idx][cross_frame_idx] = record
-
-                cross_stitch_disparity_confidence_maps[(cross_frame_idx, current_frame_idx)] = (img_size_trim, rect_proximity,
-                                                                                                min_disparity, max_disparity, num_disparities,
-                                                                                                uvs12_confidence_map, uvs12_filtered_confidence_map,
-                                                                                                cross_triangulated_image_points)
-
                 if exec_mode == 'debug_key_frame' and current_frame_idx == debug_key_frame_idx:
                     # Map the current frame image onto the cross frame
                     uvs12_gray = cv2.remap(np.array(gray), cross_flow, None, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=border_value)
 
-                    cross_triangulated_idxs = [triangulated_idx for triangulated_idx in retrace_triangulated_candidates
-                                               if cross_frame_idx in retrace_triangulated_candidates[triangulated_idx]
+                    cross_triangulated_idxs = [triangulated_idx
+                                               for triangulated_idx, current_image_point, confidence in zip(cross_unmatched_triangulated_idxs,
+                                                                                                            cross_unmatched_triangulated_current_image_points,
+                                                                                                            cross_unmatched_triangulated_confidence)
+                                               if np.all(np.isfinite(np.array([confidence, current_image_point.real, current_image_point.imag])))
                                                and triangulated_idx in cross_triangulated_idxs_to_image_idxs]
                     cross_retrace_triangulated_candidates_image_idxs = [cross_triangulated_idxs_to_image_idxs[triangulated_idx]
                                                                         for triangulated_idx in cross_triangulated_idxs]
@@ -2860,6 +2970,80 @@ if __name__ == '__main__':
                     ax.set_aspect('equal')
                     plt.tight_layout()
                     stash_fig_page()
+
+                return (print_output,
+                        cross_unmatched_triangulated_idxs,
+                        cross_unmatched_triangulated_current_image_points,
+                        cross_unmatched_triangulated_confidence,
+                        img_size_trim, rect_proximity,
+                        min_disparity, max_disparity, num_disparities,
+                        uvs12_confidence_map, uvs12_filtered_confidence_map,
+                        cross_triangulated_image_points)
+
+            if exec_mode == 'debug_key_frame' and current_frame_idx == debug_key_frame_idx:
+                for cross_frame_idx in range(current_frame_idx):
+                    print('cross_frame_idx', cross_frame_idx)
+                    result = stereo_sgbm_cross_warp(cross_frame_idx)
+                    print_output, result = result[0], result[1:]
+                    for args, kwargs in print_output:
+                        print(*args, **kwargs)
+                    if len(result) > 0:
+                        (cross_unmatched_triangulated_idxs,
+                         cross_unmatched_triangulated_current_image_points,
+                         cross_unmatched_triangulated_confidence,
+                         img_size_trim, rect_proximity,
+                         min_disparity, max_disparity, num_disparities,
+                         uvs12_confidence_map, uvs12_filtered_confidence_map,
+                         cross_triangulated_image_points) = result
+
+                        for triangulated_idx, current_image_point, confidence in zip(cross_unmatched_triangulated_idxs,
+                                                                                     cross_unmatched_triangulated_current_image_points,
+                                                                                     cross_unmatched_triangulated_confidence):
+                            record = np.array([confidence, current_image_point.real, current_image_point.imag])
+                            if np.all(np.isfinite(record)):
+                                retrace_triangulated_candidates[triangulated_idx][cross_frame_idx] = record
+
+                        cross_stitch_disparity_confidence_maps[(cross_frame_idx, current_frame_idx)] = (img_size_trim, rect_proximity,
+                                                                                                        min_disparity, max_disparity, num_disparities,
+                                                                                                        uvs12_confidence_map, uvs12_filtered_confidence_map,
+                                                                                                        cross_triangulated_image_points)
+
+            else:
+                # https://docs.python.org/3.11/library/concurrent.futures.html#concurrent.futures.ThreadPoolExecutor
+                # Default value of max_workers is min(32, os.cpu_count() + 4).
+                # This default value preserves at least 5 workers for I/O bound tasks.
+                # It utilizes at most 32 CPU cores for CPU bound tasks which release the GIL.
+                # And it avoids using very large resources implicitly on many-core machines.
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    futures = {cross_frame_idx: executor.submit(stereo_sgbm_cross_warp, cross_frame_idx)
+                               for cross_frame_idx in range(current_frame_idx)}
+
+                    for cross_frame_idx, future in futures.items():
+                        print('cross_frame_idx', cross_frame_idx)
+                        result = future.result()
+                        print_output, result = result[0], result[1:]
+                        for args, kwargs in print_output:
+                            print(*args, **kwargs)
+                        if len(result) > 0:
+                            (cross_unmatched_triangulated_idxs,
+                             cross_unmatched_triangulated_current_image_points,
+                             cross_unmatched_triangulated_confidence,
+                             img_size_trim, rect_proximity,
+                             min_disparity, max_disparity, num_disparities,
+                             uvs12_confidence_map, uvs12_filtered_confidence_map,
+                             cross_triangulated_image_points) = result
+
+                            for triangulated_idx, current_image_point, confidence in zip(cross_unmatched_triangulated_idxs,
+                                                                                         cross_unmatched_triangulated_current_image_points,
+                                                                                         cross_unmatched_triangulated_confidence):
+                                record = np.array([confidence, current_image_point.real, current_image_point.imag])
+                                if np.all(np.isfinite(record)):
+                                    retrace_triangulated_candidates[triangulated_idx][cross_frame_idx] = record
+
+                            cross_stitch_disparity_confidence_maps[(cross_frame_idx, current_frame_idx)] = (img_size_trim, rect_proximity,
+                                                                                                            min_disparity, max_disparity, num_disparities,
+                                                                                                            uvs12_confidence_map, uvs12_filtered_confidence_map,
+                                                                                                            cross_triangulated_image_points)
 
             # Select retraced triangulated points
             retrace_triangulated_main_clusters = []
@@ -2945,7 +3129,7 @@ if __name__ == '__main__':
                                 retraced_triangulated_points.append(weighted_retraced_point_mean)
 
             retraced_triangulated_idxs = np.array(retraced_triangulated_idxs, dtype=int)
-            retraced_triangulated_points = np.array(retraced_triangulated_points).reshape((-1, 2))
+            retraced_triangulated_points = np.array(retraced_triangulated_points, dtype=np.float32).reshape((-1, 2))
             print('len(retraced_triangulated_idxs)', len(retraced_triangulated_idxs))
 
             # Augment sample points with retraced triangulated points
@@ -3012,7 +3196,6 @@ if __name__ == '__main__':
                              'xsne': xsne,
                              'ysne': ysne,
                              'current_image_to_triangulated_point_idxs': current_image_to_triangulated_point_idxs,
-                             'current_triangulated_image_points': current_triangulated_image_points,
                              'retrace_triangulated_main_clusters': retrace_triangulated_main_clusters,
                              'retraced_triangulated_points': retraced_triangulated_points},
                             pickle_file)
@@ -3065,7 +3248,7 @@ if __name__ == '__main__':
         t = inv_camera_extrinsic[:3, 3:]
         stitched_triangulated_points[:, :3] = (R @ stitched_triangulated_points[:, :3].T + t).T
 
-        triangulated_idxs_weights = np.zeros((stitched_triangulated_points.shape[0],))
+        triangulated_idxs_weights = np.zeros((stitched_triangulated_points.shape[0],), dtype=np.float32)
         for triangulated_idx, projection_errs in triangulated_point_projection_errs.items():
             projection_err_sigma = 3.0
             triangulated_idxs_weights[triangulated_idx] = np.sum(np.exp(-0.5 * np.power(np.array(projection_errs) / projection_err_sigma, 2)))
@@ -3116,7 +3299,6 @@ if __name__ == '__main__':
                 xsne = data['xsne']
                 ysne = data['ysne']
                 current_image_to_triangulated_point_idxs = data['current_image_to_triangulated_point_idxs']
-                current_triangulated_image_points = data['current_triangulated_image_points']
                 retrace_triangulated_main_clusters = data['retrace_triangulated_main_clusters']
                 retraced_triangulated_points = data['retraced_triangulated_points']
 
@@ -3931,7 +4113,7 @@ if __name__ == '__main__':
 
             return torch.cat([xdd, ydd], dim=1) * model_camera_fxy + model_camera_cxy
 
-        def loss_fn(temperature):
+        def loss_fn(model_camera_fxy, model_camera_cxy, model_rvecs, model_tvecs, model_triangulated_points, temperature):
             bundle_projected_points = calc_projected_image_points_with_camera_model()
             projection_offset = bundle_projected_points - bundle_image_points
             projection_err = torch.stack([torch.sum(projection_offset * bundle_image_points_weights[:, 2:4, :], dim=1),
@@ -3957,10 +4139,15 @@ if __name__ == '__main__':
 
             return torch.sum(projection_err_losses * bundle_image_points_weights[:, :2, :])
 
+        graphed_loss_fn = torch.cuda.make_graphed_callables(loss_fn,
+                                                            sample_args=(model_camera_fxy, model_camera_cxy,
+                                                                         model_rvecs, model_tvecs, model_triangulated_points,
+                                                                         torch.tensor(0, dtype=torch.float32)))
+
         lr = 0.005
-        num_steps = 5000
-        convergence_criterion = {'rtol': 1e-4, 'window_size': 100, 'min_num_steps': 300}
-        optimiser = torch.optim.Adam([model_camera_fxy, model_camera_cxy, model_rvecs, model_tvecs, model_triangulated_points], lr=lr)
+        num_steps = 10000
+        convergence_criterion = {'rtol': 1e-4, 'window_size': 500, 'min_num_steps': 1000}
+        optimiser = torch.optim.Adam([model_camera_fxy, model_camera_cxy, model_rvecs, model_tvecs, model_triangulated_points], lr=lr, fused=True)
         lr_lambda = lambda epoch: (np.sin(min((epoch + 1) / convergence_criterion['min_num_steps'], 0.5) * np.pi)
                                    * np.power(0.1, max(epoch - 0.5 * convergence_criterion['min_num_steps'], 0) / num_steps))
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimiser, lr_lambda=lr_lambda)
@@ -3968,7 +4155,8 @@ if __name__ == '__main__':
         for optim_step in range(num_steps):
             optimiser.zero_grad()
             temperature = (1 + np.cos(np.pi * min(optim_step / convergence_criterion['min_num_steps'], 1))) / 2
-            loss = loss_fn(temperature)
+            loss = graphed_loss_fn(model_camera_fxy, model_camera_cxy, model_rvecs, model_tvecs, model_triangulated_points,
+                                   torch.tensor(temperature, dtype=torch.float32))
             loss.backward()
             optimiser.step()
             scheduler.step()
