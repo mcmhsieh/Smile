@@ -29,7 +29,7 @@ See https://github.com/mcmhsieh/ANESOK-401-frame-recorder and https://github.com
   - *if your system doesn't support CUDA, PyTorch will just use the CPU*
 - Install Python 3.11
 - Create a virtual environment and activate it
-- Install Python Poetry and use it to install the dependencies specified in [poetry.lock](poetry.lock)[^InstallingPyTorch3D]
+- Install Python Poetry 1.8.3 and use it to install the dependencies specified in [poetry.lock](poetry.lock)[^InstallingPyTorch3D]
   - *the installed dependencies should occupy ~6-7GB of disk space*
 
 ### Initial test run on a tiny example dataset
