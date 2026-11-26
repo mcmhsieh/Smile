@@ -28,6 +28,7 @@ import PIL
 import PIL.ImageOps
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -463,17 +464,18 @@ if __name__ == '__main__':
                          'next_img_blur_score': blur_score},
                         pickle_file)
 
-    plt.figure('Frame blur scores', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(3, 1, 1)
-    # The blur scores are associated with the next frame, and therefore the first frame has no blur score
-    plt.plot(np.arange(len(relative_blur_scores)) + 1, relative_blur_scores)
-    plt.plot(np.arange(len(relative_blur_scores)) + 1, relative_blur_scores_lp)
-    plt.subplot(3, 1, 2, sharex=ax)
-    plt.plot(np.arange(len(relative_blur_scores)) + 1, blur_scores)
-    plt.subplot(3, 1, 3)
-    plt.hist(blur_scores, bins=100)
-    plt.tight_layout()
+    if ipython_env:
+        plt.figure('Frame blur scores', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(3, 1, 1)
+        # The blur scores are associated with the next frame, and therefore the first frame has no blur score
+        plt.plot(np.arange(len(relative_blur_scores)) + 1, relative_blur_scores)
+        plt.plot(np.arange(len(relative_blur_scores)) + 1, relative_blur_scores_lp)
+        plt.subplot(3, 1, 2, sharex=ax)
+        plt.plot(np.arange(len(relative_blur_scores)) + 1, blur_scores)
+        plt.subplot(3, 1, 3)
+        plt.hist(blur_scores, bins=100)
+        plt.tight_layout()
 
     # %%
 
@@ -488,73 +490,74 @@ if __name__ == '__main__':
             output_path.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(output_path, cv2.cvtColor(frame_images[next_img_indices], cv2.COLOR_RGB2BGR))
 
-    fig = plt.figure('Sorted frame blur scores', figsize=(24, 12))
-    fig.clf()
+    if ipython_env:
+        fig = plt.figure('Sorted frame blur scores', figsize=(24, 12))
+        fig.clf()
 
-    axs = fig.subplots(2, 3, sharex=True, sharey=True)
+        axs = fig.subplots(2, 3, sharex=True, sharey=True)
 
-    fig_state = {'sorted_score_idx': 0, 'set_tight_layout': True}
-    def plot_new_fig_state(frame_idx_delta=0):
-        sorted_score_idx = (fig_state['sorted_score_idx'] + frame_idx_delta) % len(sorted_frame_idx)
-        fig_state['sorted_score_idx'] = sorted_score_idx
+        fig_state = {'sorted_score_idx': 0, 'set_tight_layout': True}
+        def plot_new_fig_state(frame_idx_delta=0):
+            sorted_score_idx = (fig_state['sorted_score_idx'] + frame_idx_delta) % len(sorted_frame_idx)
+            fig_state['sorted_score_idx'] = sorted_score_idx
 
-        frame_idx = sorted_frame_idx[sorted_score_idx]
-        (prev_img_indices, next_img_indices, prev_gray, next_gray, next_gray_warp,
-         prev_gray_grad2, next_gray_warp_grad2, prev_grad2, next_grad2) = frame_blur_results[frame_idx]
+            frame_idx = sorted_frame_idx[sorted_score_idx]
+            (prev_img_indices, next_img_indices, prev_gray, next_gray, next_gray_warp,
+             prev_gray_grad2, next_gray_warp_grad2, prev_grad2, next_grad2) = frame_blur_results[frame_idx]
 
-        for ax in axs.flatten():
-            ax.cla()
+            for ax in axs.flatten():
+                ax.cla()
 
-        title = '\n'.join([f'Sorted frame score index {sorted_score_idx} / {len(sorted_frame_idx)}',
-                           'frames {} {}, {} {}'.format(*prev_img_indices, *next_img_indices),
-                           f'next frame blur score {blur_scores[frame_idx]:.3f}'])
-        fig.suptitle(title)
-        axs[0, 0].imshow(frame_images[prev_img_indices])
-        axs[0, 0].set_title('prev frame image')
-        axs[1, 0].imshow(frame_images[next_img_indices])
-        axs[1, 0].set_title('next frame image')
-        axs[0, 1].imshow(prev_gray, cmap='gray', vmin=0, vmax=1)
-        axs[0, 1].set_title('prev frame normed gray')
-        axs[1, 1].imshow(next_gray_warp, cmap='gray', vmin=0, vmax=1)
-        axs[1, 1].set_title('next frame warped normed gray')
-        vmax = np.nanmax(np.stack([prev_gray_grad2, next_gray_warp_grad2]))
-        axs[0, 2].imshow(prev_gray_grad2, vmin=0, vmax=vmax)
-        axs[0, 2].set_title(f'prev_grad2 {prev_grad2}')
-        axs[1, 2].imshow(next_gray_warp_grad2, vmin=0, vmax=vmax)
-        axs[1, 2].set_title(f'next_grad2 {next_grad2}')
+            title = '\n'.join([f'Sorted frame score index {sorted_score_idx} / {len(sorted_frame_idx)}',
+                               'frames {} {}, {} {}'.format(*prev_img_indices, *next_img_indices),
+                               f'next frame blur score {blur_scores[frame_idx]:.3f}'])
+            fig.suptitle(title)
+            axs[0, 0].imshow(frame_images[prev_img_indices])
+            axs[0, 0].set_title('prev frame image')
+            axs[1, 0].imshow(frame_images[next_img_indices])
+            axs[1, 0].set_title('next frame image')
+            axs[0, 1].imshow(prev_gray, cmap='gray', vmin=0, vmax=1)
+            axs[0, 1].set_title('prev frame normed gray')
+            axs[1, 1].imshow(next_gray_warp, cmap='gray', vmin=0, vmax=1)
+            axs[1, 1].set_title('next frame warped normed gray')
+            vmax = np.nanmax(np.stack([prev_gray_grad2, next_gray_warp_grad2]))
+            axs[0, 2].imshow(prev_gray_grad2, vmin=0, vmax=vmax)
+            axs[0, 2].set_title(f'prev_grad2 {prev_grad2}')
+            axs[1, 2].imshow(next_gray_warp_grad2, vmin=0, vmax=vmax)
+            axs[1, 2].set_title(f'next_grad2 {next_grad2}')
 
-        if fig_state['set_tight_layout']:
-            fig.tight_layout()
-            fig_state['set_tight_layout'] = False
+            if fig_state['set_tight_layout']:
+                fig.tight_layout()
+                fig_state['set_tight_layout'] = False
 
-        fig.canvas.draw_idle()
+            fig.canvas.draw_idle()
 
-    plot_new_fig_state()
+        plot_new_fig_state()
 
-    ax_prev = fig.add_axes([0.1, 0.9, 0.1, 0.075])
-    ax_next = fig.add_axes([0.21, 0.9, 0.1, 0.075])
-    button_prev = matplotlib.widgets.Button(ax_prev, 'Prev')
-    button_prev.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=-1))
-    button_next = matplotlib.widgets.Button(ax_next, 'Next')
-    button_next.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=1))
+        ax_prev = fig.add_axes([0.1, 0.9, 0.1, 0.075])
+        ax_next = fig.add_axes([0.21, 0.9, 0.1, 0.075])
+        button_prev = matplotlib.widgets.Button(ax_prev, 'Prev')
+        button_prev.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=-1))
+        button_next = matplotlib.widgets.Button(ax_next, 'Next')
+        button_next.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=1))
 
-    ax_prev_50 = fig.add_axes([0.7, 0.9, 0.1, 0.075])
-    ax_next_50 = fig.add_axes([0.81, 0.9, 0.1, 0.075])
-    button_prev_50 = matplotlib.widgets.Button(ax_prev_50, 'Prev 50')
-    button_prev_50.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=-50))
-    button_next_50 = matplotlib.widgets.Button(ax_next_50, 'Next 50')
-    button_next_50.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=50))
+        ax_prev_50 = fig.add_axes([0.7, 0.9, 0.1, 0.075])
+        ax_next_50 = fig.add_axes([0.81, 0.9, 0.1, 0.075])
+        button_prev_50 = matplotlib.widgets.Button(ax_prev_50, 'Prev 50')
+        button_prev_50.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=-50))
+        button_next_50 = matplotlib.widgets.Button(ax_next_50, 'Next 50')
+        button_next_50.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=50))
 
-    def disconnect_on_ax_clear(widget):
-        old_ax_clear_fn = widget.ax.clear
-        def new_ax_clear_fn():
-            widget.disconnect_events()
-            old_ax_clear_fn()
-        widget.ax.clear = new_ax_clear_fn
-    disconnect_on_ax_clear(button_prev)
-    disconnect_on_ax_clear(button_next)
-    disconnect_on_ax_clear(button_prev_50)
-    disconnect_on_ax_clear(button_next_50)
+        def disconnect_on_ax_clear(widget):
+            old_ax_clear_fn = widget.ax.clear
+            def new_ax_clear_fn():
+                widget.disconnect_events()
+                old_ax_clear_fn()
+            widget.ax.clear = new_ax_clear_fn
+        disconnect_on_ax_clear(button_prev)
+        disconnect_on_ax_clear(button_next)
+        disconnect_on_ax_clear(button_prev_50)
+        disconnect_on_ax_clear(button_next_50)
 
     # %%
 

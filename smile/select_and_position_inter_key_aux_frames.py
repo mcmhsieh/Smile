@@ -34,6 +34,7 @@ sys.path.append('../external/pytorch3d')
 import pytorch3d.transforms
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -224,130 +225,133 @@ if __name__ == '__main__':
 
                     selected_frame_idx = frame_idxs[selected_frame_offset]
 
-                    plt.figure('Flow costs', figsize=(16, 10))
-                    setup_new_fig_page()
-                    plt.suptitle('\n'.join(['Ref key frame: {} {}'.format(*frame_indices_seq[0]),
-                                            f'{direction} {target_flow_displacement}']))
-                    ax = plt.subplot(3, 2, 1)
-                    plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 0], 'o-')
-                    plt.axvline(selected_frame_idx, linestyle='--', color='black')
-                    #plt.ylim((0, plt.ylim()[1]))
-                    plt.title('flow_displacements')
-                    plt.subplot(3, 2, 3, sharex=ax)
-                    plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 1], 'o-')
-                    plt.axvline(selected_frame_idx, linestyle='--', color='black')
-                    plt.ylim((0, plt.ylim()[1]))
-                    plt.title('motion_blurs')
-                    plt.subplot(3, 2, 5, sharex=ax)
-                    plt.plot(frame_idxs[1:-1], flow_costs, 'o-')
-                    plt.axvline(selected_frame_idx, linestyle='--', color='black')
-                    plt.ylim((-0.5, 6.5))
-                    plt.title('flow_costs')
-                    ax = plt.subplot(1, 2, 2, projection='3d')
-                    ax.plot(flow_displacements_and_motion_blurs[1:-1, 0], flow_displacements_and_motion_blurs[1:-1, 1], flow_costs, 'ko:')
-                    flow_displacements_grid, motion_blurs_grid = np.meshgrid(np.arange(0.2, 180, 0.2), np.arange(0.01, 9, 0.01))
-                    flow_costs_grid = calc_flow_costs(flow_displacements_grid, motion_blurs_grid)
-                    ax.contour(flow_displacements_grid, motion_blurs_grid, flow_costs_grid, levels=np.arange(-0.1, 6.1, 0.1))
-                    ax.set_zlim((-0.5, 6.5))
-                    ax.set_xlabel('flow_displacements')
-                    ax.set_ylabel('motion_blurs')
-                    ax.set_zlabel('flow_costs')
-                    ax.view_init(elev=80, azim=-90, roll=0)
-                    plt.tight_layout()
-                    stash_fig_page()
+                    if ipython_env:
+                        plt.figure('Flow costs', figsize=(16, 10))
+                        setup_new_fig_page()
+                        plt.suptitle('\n'.join(['Ref key frame: {} {}'.format(*frame_indices_seq[0]),
+                                                f'{direction} {target_flow_displacement}']))
+                        ax = plt.subplot(3, 2, 1)
+                        plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 0], 'o-')
+                        plt.axvline(selected_frame_idx, linestyle='--', color='black')
+                        #plt.ylim((0, plt.ylim()[1]))
+                        plt.title('flow_displacements')
+                        plt.subplot(3, 2, 3, sharex=ax)
+                        plt.plot(frame_idxs, flow_displacements_and_motion_blurs[:, 1], 'o-')
+                        plt.axvline(selected_frame_idx, linestyle='--', color='black')
+                        plt.ylim((0, plt.ylim()[1]))
+                        plt.title('motion_blurs')
+                        plt.subplot(3, 2, 5, sharex=ax)
+                        plt.plot(frame_idxs[1:-1], flow_costs, 'o-')
+                        plt.axvline(selected_frame_idx, linestyle='--', color='black')
+                        plt.ylim((-0.5, 6.5))
+                        plt.title('flow_costs')
+                        ax = plt.subplot(1, 2, 2, projection='3d')
+                        ax.plot(flow_displacements_and_motion_blurs[1:-1, 0], flow_displacements_and_motion_blurs[1:-1, 1], flow_costs, 'ko:')
+                        flow_displacements_grid, motion_blurs_grid = np.meshgrid(np.arange(0.2, 180, 0.2), np.arange(0.01, 9, 0.01))
+                        flow_costs_grid = calc_flow_costs(flow_displacements_grid, motion_blurs_grid)
+                        ax.contour(flow_displacements_grid, motion_blurs_grid, flow_costs_grid, levels=np.arange(-0.1, 6.1, 0.1))
+                        ax.set_zlim((-0.5, 6.5))
+                        ax.set_xlabel('flow_displacements')
+                        ax.set_ylabel('motion_blurs')
+                        ax.set_zlabel('flow_costs')
+                        ax.view_init(elev=80, azim=-90, roll=0)
+                        plt.tight_layout()
+                        stash_fig_page()
 
             for selected_frame_offset in sorted(selected_frame_offsets, reverse=(direction == 'reverse')):
                 selected_inter_key_aux_frames[frame_indices_seq[0]].append(frame_indices_seq[selected_frame_offset])
 
     # %%
 
-    plt.close('Selected inter key aux frames')
+    if ipython_env:
+        plt.close('Selected inter key aux frames')
 
-    def read_img(frame_indices):
-        frame_index, frame_time = frame_indices
-        filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.resized.png'
-        return cv2.cvtColor(cv2.imread(image_source_dirpath / filename, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH), cv2.COLOR_BGR2RGB)
+        def read_img(frame_indices):
+            frame_index, frame_time = frame_indices
+            filename = f'{frame_time.strftime("%Y%m%d-%H%M%S%f")}.{frame_index:03d}.resized.png'
+            return cv2.cvtColor(cv2.imread(image_source_dirpath / filename, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH), cv2.COLOR_BGR2RGB)
 
-    for ref_frame_indices, aux_frames in selected_inter_key_aux_frames.items():
-        plt.figure('Selected inter key aux frames', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle('Ref key frame: {} {}'.format(*ref_frame_indices))
-        n_subplots = len(aux_frames) + 1
-        n_rows = int(np.ceil(np.sqrt(n_subplots / 1.5)))
-        n_cols = int(np.ceil(n_subplots / n_rows))
-        ax = plt.subplot(n_rows, n_cols, 1)
-        plt.imshow(read_img(ref_frame_indices))
-        plt.title(f'ref key frame, motion blur {frame_motion_blurs[ref_frame_indices]:.3f}')
-        for plot_idx, aux_frame_indices in enumerate(aux_frames, start=2):
-            plt.subplot(n_rows, n_cols, plot_idx, sharex=ax, sharey=ax)
-            plt.imshow(read_img(aux_frame_indices))
-            frame_flow_displacements_ref_indices, flow_displacement = frame_flow_displacements[aux_frame_indices]
-            if frame_flow_displacements_ref_indices != ref_frame_indices:
-                _, ref_frame_flow_displacement = frame_flow_displacements[ref_frame_indices]
-                flow_displacement -= ref_frame_flow_displacement
-            plt.title(f'aux frame, displacement {flow_displacement:.3f}, motion blur {frame_motion_blurs[aux_frame_indices]:.3f}')
-        plt.tight_layout()
-        stash_fig_page()
+        for ref_frame_indices, aux_frames in selected_inter_key_aux_frames.items():
+            plt.figure('Selected inter key aux frames', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle('Ref key frame: {} {}'.format(*ref_frame_indices))
+            n_subplots = len(aux_frames) + 1
+            n_rows = int(np.ceil(np.sqrt(n_subplots / 1.5)))
+            n_cols = int(np.ceil(n_subplots / n_rows))
+            ax = plt.subplot(n_rows, n_cols, 1)
+            plt.imshow(read_img(ref_frame_indices))
+            plt.title(f'ref key frame, motion blur {frame_motion_blurs[ref_frame_indices]:.3f}')
+            for plot_idx, aux_frame_indices in enumerate(aux_frames, start=2):
+                plt.subplot(n_rows, n_cols, plot_idx, sharex=ax, sharey=ax)
+                plt.imshow(read_img(aux_frame_indices))
+                frame_flow_displacements_ref_indices, flow_displacement = frame_flow_displacements[aux_frame_indices]
+                if frame_flow_displacements_ref_indices != ref_frame_indices:
+                    _, ref_frame_flow_displacement = frame_flow_displacements[ref_frame_indices]
+                    flow_displacement -= ref_frame_flow_displacement
+                plt.title(f'aux frame, displacement {flow_displacement:.3f}, motion blur {frame_motion_blurs[aux_frame_indices]:.3f}')
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
-    assert set(key_frame_indices[:-1]) == set(frame_data_map)
+    if ipython_env:
+        assert set(key_frame_indices[:-1]) == set(frame_data_map)
 
-    frame_indices_seq = []
-    cumulative_flow_displacements_and_motion_blurs = []
-    for prev_key_frame_indices, next_key_frame_indices, prev_key_frame_motion_blur in zip(key_frame_indices[:-1], key_frame_indices[1:], key_frame_motion_blurs[:-1]):
-        frame_types = [frame_type for _, frame_type, _, _ in frame_data_map[prev_key_frame_indices]]
-        assert frame_types == ['aux'] * len(frame_types[:-1]) + ['key']
+        frame_indices_seq = []
+        cumulative_flow_displacements_and_motion_blurs = []
+        for prev_key_frame_indices, next_key_frame_indices, prev_key_frame_motion_blur in zip(key_frame_indices[:-1], key_frame_indices[1:], key_frame_motion_blurs[:-1]):
+            frame_types = [frame_type for _, frame_type, _, _ in frame_data_map[prev_key_frame_indices]]
+            assert frame_types == ['aux'] * len(frame_types[:-1]) + ['key']
 
-        if len(frame_indices_seq) == 0:
-            frame_indices_seq.append(prev_key_frame_indices)
-            cumulative_flow_displacements_and_motion_blurs.append((0, prev_key_frame_motion_blur))
+            if len(frame_indices_seq) == 0:
+                frame_indices_seq.append(prev_key_frame_indices)
+                cumulative_flow_displacements_and_motion_blurs.append((0, prev_key_frame_motion_blur))
 
-        frame_indices_seq.extend([img_indices for img_indices, _, _, _ in frame_data_map[prev_key_frame_indices]])
-        assert frame_indices_seq[-1] == next_key_frame_indices
-        prev_flow_displacement, _ = cumulative_flow_displacements_and_motion_blurs[-1]
-        cumulative_flow_displacements_and_motion_blurs.extend([(flow_displacement + prev_flow_displacement, motion_blur)
-                                                               for _, _, flow_displacement, motion_blur in frame_data_map[prev_key_frame_indices]])
+            frame_indices_seq.extend([img_indices for img_indices, _, _, _ in frame_data_map[prev_key_frame_indices]])
+            assert frame_indices_seq[-1] == next_key_frame_indices
+            prev_flow_displacement, _ = cumulative_flow_displacements_and_motion_blurs[-1]
+            cumulative_flow_displacements_and_motion_blurs.extend([(flow_displacement + prev_flow_displacement, motion_blur)
+                                                                   for _, _, flow_displacement, motion_blur in frame_data_map[prev_key_frame_indices]])
 
-    key_frame_idxs = [frame_indices_seq.index(frame_indices) for frame_indices in key_frame_indices]
-    selected_frame_idxs = sorted(set([frame_indices_seq.index(frame_indices)
-                                      for aux_frames in selected_inter_key_aux_frames.values()
-                                      for frame_indices in aux_frames]))
-    cumulative_flow_displacements_and_motion_blurs = np.array(cumulative_flow_displacements_and_motion_blurs)
+        key_frame_idxs = [frame_indices_seq.index(frame_indices) for frame_indices in key_frame_indices]
+        selected_frame_idxs = sorted(set([frame_indices_seq.index(frame_indices)
+                                          for aux_frames in selected_inter_key_aux_frames.values()
+                                          for frame_indices in aux_frames]))
+        cumulative_flow_displacements_and_motion_blurs = np.array(cumulative_flow_displacements_and_motion_blurs)
 
-    plt.figure('Cumulative flow displacements and motion blurs', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(2, 1, 1)
-    plt.plot(cumulative_flow_displacements_and_motion_blurs[:, 0])
-    plt.scatter(key_frame_idxs, cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 0],
-                s=10+30*cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
-                c=cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
-                marker='o', label='key')
-    plt.scatter(selected_frame_idxs, cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 0],
-                s=10+30*np.power(cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1], 2),
-                c=cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1],
-                marker='P', label='aux')
-    for idx in key_frame_idxs:
-        plt.axvline(idx, alpha=0.2)
-    plt.ylabel('flow displacement')
-    plt.legend()
-    ax1 = plt.subplot(2, 1, 2, sharex=ax)
-    ax1.plot(cumulative_flow_displacements_and_motion_blurs[:, 1])
-    ax1.scatter(key_frame_idxs, cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
-                s=10+30*cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
-                c=cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
-                marker='o')
-    ax1.scatter(selected_frame_idxs, cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1],
-                s=10+30*np.power(cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1], 2),
-                c=cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1],
-                marker='P')
-    ax1.set_ylabel('motion blur')
-    ax2 = ax1.twinx()
-    ax2.plot(np.gradient(cumulative_flow_displacements_and_motion_blurs[:, 0]), '--', alpha=0.2)
-    for idx in key_frame_idxs:
-        ax2.axvline(idx, alpha=0.2)
-    ax2.set_ylabel('flow displacement gradient')
-    plt.tight_layout()
+        plt.figure('Cumulative flow displacements and motion blurs', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(2, 1, 1)
+        plt.plot(cumulative_flow_displacements_and_motion_blurs[:, 0])
+        plt.scatter(key_frame_idxs, cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 0],
+                    s=10+30*cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
+                    c=cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
+                    marker='o', label='key')
+        plt.scatter(selected_frame_idxs, cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 0],
+                    s=10+30*np.power(cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1], 2),
+                    c=cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1],
+                    marker='P', label='aux')
+        for idx in key_frame_idxs:
+            plt.axvline(idx, alpha=0.2)
+        plt.ylabel('flow displacement')
+        plt.legend()
+        ax1 = plt.subplot(2, 1, 2, sharex=ax)
+        ax1.plot(cumulative_flow_displacements_and_motion_blurs[:, 1])
+        ax1.scatter(key_frame_idxs, cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
+                    s=10+30*cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
+                    c=cumulative_flow_displacements_and_motion_blurs[key_frame_idxs, 1],
+                    marker='o')
+        ax1.scatter(selected_frame_idxs, cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1],
+                    s=10+30*np.power(cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1], 2),
+                    c=cumulative_flow_displacements_and_motion_blurs[selected_frame_idxs, 1],
+                    marker='P')
+        ax1.set_ylabel('motion blur')
+        ax2 = ax1.twinx()
+        ax2.plot(np.gradient(cumulative_flow_displacements_and_motion_blurs[:, 0]), '--', alpha=0.2)
+        for idx in key_frame_idxs:
+            ax2.axvline(idx, alpha=0.2)
+        ax2.set_ylabel('flow displacement gradient')
+        plt.tight_layout()
 
     # %%
 
@@ -878,78 +882,79 @@ if __name__ == '__main__':
 
     # %%
 
-    frame_ordinals = {}
-    for ref_img_indices in key_frame_indices:
-        frame_ordinals[ref_img_indices] = len(frame_ordinals)
-        if ref_img_indices in frame_data_map:
-            for img_indices, _, _, _ in frame_data_map[ref_img_indices]:
-                if img_indices in aux_frame_indices:
-                    frame_ordinals[img_indices] = len(frame_ordinals)
+    if ipython_env:
+        frame_ordinals = {}
+        for ref_img_indices in key_frame_indices:
+            frame_ordinals[ref_img_indices] = len(frame_ordinals)
+            if ref_img_indices in frame_data_map:
+                for img_indices, _, _, _ in frame_data_map[ref_img_indices]:
+                    if img_indices in aux_frame_indices:
+                        frame_ordinals[img_indices] = len(frame_ordinals)
 
-    camera_extrinsics_map = dict(list(zip(key_frame_indices, camera_extrinsics))
-                                 + list(zip(aux_frame_indices, aux_frame_camera_extrinsics)))
-    frame_camera_extrinsics = [camera_extrinsics_map[frame_indices] for frame_indices in frame_ordinals]
+        camera_extrinsics_map = dict(list(zip(key_frame_indices, camera_extrinsics))
+                                     + list(zip(aux_frame_indices, aux_frame_camera_extrinsics)))
+        frame_camera_extrinsics = [camera_extrinsics_map[frame_indices] for frame_indices in frame_ordinals]
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=1024, height=768, left=200, top=200)
 
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
+        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                         [1, 0, 0],
+                                                                         [0, 1, 0],
+                                                                         [0, 0, 1]]),
+                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+        axes_geometry.scale(20, [0, 0, 0])
+        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0, 0, 0])
+        ctr.set_up([0, -1, 0])
+        # vector from the lookat point to the camera
+        # make gaze from the camera to lookat point left-ward and down-ward
+        ctr.set_front([0.5, -0.5, -0.5])
+        ctr.set_zoom(1.0)
+        ctr.set_constant_z_far(200.0)
 
-    for prev_camera_extrinsic, camera_extrinsic, frame_indices in zip([None] + frame_camera_extrinsics[:-1], frame_camera_extrinsics, frame_ordinals):
-        # The extrinsic matrix transforms from world coordinates to camera coordinates
-        camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                        intrinsic=camera_matrix,
-                                                                        extrinsic=camera_extrinsic)
-        if frame_indices in key_frame_indices:
-            camera_lines.paint_uniform_color([0, 0.5, 1])
-        else:
-            camera_lines.paint_uniform_color([0.5, 0.75, 0])
-        if prev_camera_extrinsic is not None:
-            camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                        np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                        np.linalg.inv(camera_extrinsic)[:3, 3]]))
-            camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                       [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-            camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                        [1, 0, 0.5]]))
-        vis.add_geometry(camera_lines, reset_bounding_box=False)
+        for prev_camera_extrinsic, camera_extrinsic, frame_indices in zip([None] + frame_camera_extrinsics[:-1], frame_camera_extrinsics, frame_ordinals):
+            # The extrinsic matrix transforms from world coordinates to camera coordinates
+            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                            intrinsic=camera_matrix,
+                                                                            extrinsic=camera_extrinsic)
+            if frame_indices in key_frame_indices:
+                camera_lines.paint_uniform_color([0, 0.5, 1])
+            else:
+                camera_lines.paint_uniform_color([0.5, 0.75, 0])
+            if prev_camera_extrinsic is not None:
+                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                            [1, 0, 0.5]]))
+            vis.add_geometry(camera_lines, reset_bounding_box=False)
 
-    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, post_optimise_triangulated_idxs_mask].T))
-    pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, post_optimise_triangulated_idxs_mask].T / 255)
-    vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
+        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, post_optimise_triangulated_idxs_mask].T))
+        pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, post_optimise_triangulated_idxs_mask].T / 255)
+        vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
 
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = not vis.poll_events()
-        vis.update_renderer()
-        new_view_status = vis.get_view_status()
-        if new_view_status != view_status:
-            view_status = new_view_status
-            view_status_time = time.time()
-        elif time.time() > view_status_time + visualisation_idle_timeout:
-            close_vis = True
-        if close_vis:
-            break
+        view_status = vis.get_view_status()
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
+        while True:
+            close_vis = not vis.poll_events()
+            vis.update_renderer()
+            new_view_status = vis.get_view_status()
+            if new_view_status != view_status:
+                view_status = new_view_status
+                view_status_time = time.monotonic()
+            elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                close_vis = True
+            if close_vis:
+                break
 
-    vis.destroy_window()
+        vis.destroy_window()
 
     # %%
 

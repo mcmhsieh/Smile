@@ -97,7 +97,7 @@ def start_pipeline_server():
     # For some reason, creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     # still creates a child process within the process tree.
     subprocess.Popen([SYS_EXECUTABLE, PIPELINE_SERVER_FILEPATH])
-    start_time = time.time()
+    start_time = time.monotonic()
     while True:
         try:
             get_queue_from_pipeline_server()
@@ -106,7 +106,7 @@ def start_pipeline_server():
             if isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
                 if e.response.status_code != 503:
                     raise
-            assert time.time() < start_time + 30, 'timeout waiting for pipeline server to respond'
+            assert time.monotonic() < start_time + 30, 'timeout waiting for pipeline server to respond'
             print('waiting for pipeline server to respond')
             time.sleep(1)
 
@@ -175,7 +175,7 @@ class App(tk.Tk):
         if len(pipeline_queue) > 0:
             self.last_empty_time = None
         elif self.last_empty_time is None:
-            self.last_empty_time = time.time()
+            self.last_empty_time = time.monotonic()
             self.after(self.terminate_on_empty_timeout * 1000, self.check_terminate_timeout)
 
         states = collections.Counter(state for _, state in pipeline_queue.items())
@@ -201,7 +201,7 @@ class App(tk.Tk):
         if self.last_empty_time is None:
             return
 
-        if time.time() - self.last_empty_time >= self.terminate_on_empty_timeout:
+        if time.monotonic() - self.last_empty_time >= self.terminate_on_empty_timeout:
             self.terminating = True
             self.destroy()
         else:

@@ -28,6 +28,7 @@ import open3d as o3d
 import shapely
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -84,16 +85,16 @@ def visualise_geometries(geometries, image_size, camera_intrinsic, lookat, up, f
     ctr.set_constant_z_far(200.0)
 
     view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+    view_status_time = time.monotonic()
+    visualisation_idle_timeout = 60
     while True:
         close_vis = not vis.poll_events()
         vis.update_renderer()
         new_view_status = vis.get_view_status()
         if new_view_status != view_status:
             view_status = new_view_status
-            view_status_time = time.time()
-        elif time.time() > view_status_time + visualisation_idle_timeout:
+            view_status_time = time.monotonic()
+        elif time.monotonic() > view_status_time + visualisation_idle_timeout:
             close_vis = True
         if close_vis:
             break
@@ -419,13 +420,14 @@ if __name__ == '__main__':
             # A .mtl material file is written separately to the .obj file
             o3d.io.write_triangle_mesh(str(output_path), trimmed_canvas_mesh)
 
-        visualise_geometries([trimmed_canvas_mesh],
-                             material_image.shape[1::-1],
-                             synthetic_camera_intrinsic,
-                             lookat=[0, 0, 8],
-                             up=[0, -1, 0],
-                             front=[0, 0, -8],
-                             zoom=1.0)
+        if ipython_env:
+            visualise_geometries([trimmed_canvas_mesh],
+                                 material_image.shape[1::-1],
+                                 synthetic_camera_intrinsic,
+                                 lookat=[0, 0, 8],
+                                 up=[0, -1, 0],
+                                 front=[0, 0, -8],
+                                 zoom=1.0)
 
     # %%
 
@@ -477,96 +479,97 @@ if __name__ == '__main__':
 
     # %%
 
-    for input_path in sorted(input_source_dirpath.glob('*.pickle')):
-        print(input_path)
+    if ipython_env:
+        for input_path in sorted(input_source_dirpath.glob('*.pickle')):
+            print(input_path)
 
-        with open(input_path, 'rb') as pickle_file:
-            data = pickle.load(pickle_file)
-            synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
-            synthetic_camera_intrinsic = data['synthetic_camera_intrinsic']
-            filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
-            vertices = data['vertices']
-            triangles = data['triangles']
-            vertex_colors = data['vertex_colors']
-            up_model_frames_idxs = data['up_model_frames_idxs']
-            up_model_cmap = data['up_model_cmap']
-            up_max_model_mapping_scores = data['up_max_model_mapping_scores']
+            with open(input_path, 'rb') as pickle_file:
+                data = pickle.load(pickle_file)
+                synthetic_camera_extrinsic = data['synthetic_camera_extrinsic']
+                synthetic_camera_intrinsic = data['synthetic_camera_intrinsic']
+                filtered_up_model_synthetic_frame_img = data['filtered_up_model_synthetic_frame_img']
+                vertices = data['vertices']
+                triangles = data['triangles']
+                vertex_colors = data['vertex_colors']
+                up_model_frames_idxs = data['up_model_frames_idxs']
+                up_model_cmap = data['up_model_cmap']
+                up_max_model_mapping_scores = data['up_max_model_mapping_scores']
 
-        # np.unique() returns sorted unique elements
-        secondary_frame_idxs = np.unique(up_model_frames_idxs)
+            # np.unique() returns sorted unique elements
+            secondary_frame_idxs = np.unique(up_model_frames_idxs)
 
-        fig_elements = {}
+            fig_elements = {}
 
-        fig = plt.figure(f'Interactive frame mapping {input_path.stem}', figsize=(24, 12))
-        fig.clf()
-        fig_ax1 = plt.subplot(1, 2, 1)
-        fig_ax2 = plt.subplot(1, 2, 2)
+            fig = plt.figure(f'Interactive frame mapping {input_path.stem}', figsize=(24, 12))
+            fig.clf()
+            fig_ax1 = plt.subplot(1, 2, 1)
+            fig_ax2 = plt.subplot(1, 2, 2)
 
-        fig_ax1.cla()
-        fig_ax1.set_facecolor('grey')
-        fig_ax1.imshow(np.clip(np.require(filtered_up_model_synthetic_frame_img, dtype=np.float32) / 255, 0, 1))
-        #fig_ax1.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba', alpha=0.2)
-        fig_ax2.cla()
-        fig_elements['sec_img'] = fig_ax2.imshow(np.require(frame_images[secondary_frame_idxs[0]], dtype=np.uint8))
-        fig_elements['sec_title'] = fig_ax2.set_title(f'frame idx: {secondary_frame_idxs[0]}')
+            fig_ax1.cla()
+            fig_ax1.set_facecolor('grey')
+            fig_ax1.imshow(np.clip(np.require(filtered_up_model_synthetic_frame_img, dtype=np.float32) / 255, 0, 1))
+            #fig_ax1.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba', alpha=0.2)
+            fig_ax2.cla()
+            fig_elements['sec_img'] = fig_ax2.imshow(np.require(frame_images[secondary_frame_idxs[0]], dtype=np.uint8))
+            fig_elements['sec_title'] = fig_ax2.set_title(f'frame idx: {secondary_frame_idxs[0]}')
 
-        projected_polygons = {frame_idx: fig_ax1.plot(*coords.T, color='b')
-                              for frame_idx, coords in projected_polygon_coords[input_path.stem].items()}
+            projected_polygons = {frame_idx: fig_ax1.plot(*coords.T, color='b')
+                                  for frame_idx, coords in projected_polygon_coords[input_path.stem].items()}
 
-        def fig_on_resize(fig, fig_elements, projected_polygons, event):
-            for polygon_boundary_lines in projected_polygons.values():
-                for line in polygon_boundary_lines:
-                    line.set_alpha(0)
-            fig_elements['sec_title'].set_alpha(0)
-            fig.tight_layout()
-            fig.canvas.draw()
-            fig_elements['background'] = fig.canvas.copy_from_bbox(fig.bbox)
-            fig_elements['sec_title'].set_alpha(1)
-            fig.canvas.draw_idle()
+            def fig_on_resize(fig, fig_elements, projected_polygons, event):
+                for polygon_boundary_lines in projected_polygons.values():
+                    for line in polygon_boundary_lines:
+                        line.set_alpha(0)
+                fig_elements['sec_title'].set_alpha(0)
+                fig.tight_layout()
+                fig.canvas.draw()
+                fig_elements['background'] = fig.canvas.copy_from_bbox(fig.bbox)
+                fig_elements['sec_title'].set_alpha(1)
+                fig.canvas.draw_idle()
 
-        def fig_on_motion(fig, fig_ax1, fig_ax2, fig_elements,
-                          filtered_up_model_synthetic_frame_img, up_model_frames_idxs, projected_polygons, event):
-            fig_scaling = np.sqrt(np.linalg.det(fig_ax1.transAxes.get_matrix()[:2, :2])) * 1e-3
-            for polygon_boundary_lines in projected_polygons.values():
-                for line in polygon_boundary_lines:
-                    line.set_alpha(0)
-                    line.set_linewidth(3 * fig_scaling)
+            def fig_on_motion(fig, fig_ax1, fig_ax2, fig_elements,
+                              filtered_up_model_synthetic_frame_img, up_model_frames_idxs, projected_polygons, event):
+                fig_scaling = np.sqrt(np.linalg.det(fig_ax1.transAxes.get_matrix()[:2, :2])) * 1e-3
+                for polygon_boundary_lines in projected_polygons.values():
+                    for line in polygon_boundary_lines:
+                        line.set_alpha(0)
+                        line.set_linewidth(3 * fig_scaling)
 
-            secondary_frame_idx = None
-            if event.inaxes == fig_ax1:
-                mouse_xy = np.array([event.xdata, event.ydata])
-                x, y = np.round(mouse_xy).astype(int)
-                if np.all(np.isfinite(filtered_up_model_synthetic_frame_img[y, x, :]), axis=-1):
-                    secondary_frame_idx = up_model_frames_idxs[y, x]
-                    for line in projected_polygons[secondary_frame_idx]:
-                        line.set_alpha(0.5)
-                    fig_elements['sec_img'].set_data(frame_images[secondary_frame_idx])
-                    fig_elements['sec_title'].set_text(f'frame idx: {secondary_frame_idx}')
+                secondary_frame_idx = None
+                if event.inaxes == fig_ax1:
+                    mouse_xy = np.array([event.xdata, event.ydata])
+                    x, y = np.round(mouse_xy).astype(int)
+                    if np.all(np.isfinite(filtered_up_model_synthetic_frame_img[y, x, :]), axis=-1):
+                        secondary_frame_idx = up_model_frames_idxs[y, x]
+                        for line in projected_polygons[secondary_frame_idx]:
+                            line.set_alpha(0.5)
+                        fig_elements['sec_img'].set_data(frame_images[secondary_frame_idx])
+                        fig_elements['sec_title'].set_text(f'frame idx: {secondary_frame_idx}')
 
-            #fig.canvas.draw()
-            #fig.canvas.draw_idle()
+                #fig.canvas.draw()
+                #fig.canvas.draw_idle()
 
-            fig.canvas.restore_region(fig_elements['background'])
-            for polygon_boundary_lines in projected_polygons.values():
-                for line in polygon_boundary_lines:
-                    fig_ax1.draw_artist(line)
-            fig_ax2.draw_artist(fig_elements['sec_img'])
-            fig_ax2.draw_artist(fig_elements['sec_title'])
-            fig.canvas.blit(fig.bbox)
-            fig.canvas.flush_events()
+                fig.canvas.restore_region(fig_elements['background'])
+                for polygon_boundary_lines in projected_polygons.values():
+                    for line in polygon_boundary_lines:
+                        fig_ax1.draw_artist(line)
+                fig_ax2.draw_artist(fig_elements['sec_img'])
+                fig_ax2.draw_artist(fig_elements['sec_title'])
+                fig.canvas.blit(fig.bbox)
+                fig.canvas.flush_events()
 
-        for cid in [cid for signal, cid_ref_map in fig.canvas.callbacks.callbacks.items() for cid in cid_ref_map]:
-            fig.canvas.mpl_disconnect(cid)
+            for cid in [cid for signal, cid_ref_map in fig.canvas.callbacks.callbacks.items() for cid in cid_ref_map]:
+                fig.canvas.mpl_disconnect(cid)
 
-        fig_on_resize_callback = functools.partial(fig_on_resize, fig, fig_elements, projected_polygons)
-        fig_on_motion_callback = functools.partial(fig_on_motion, fig, fig_ax1, fig_ax2, fig_elements,
-                                                   filtered_up_model_synthetic_frame_img, up_model_frames_idxs, projected_polygons)
-        cid_resize = fig.canvas.mpl_connect('resize_event', fig_on_resize_callback)
-        cid_motion = fig.canvas.mpl_connect('motion_notify_event', fig_on_motion_callback)
-        cid_axes_leave = fig.canvas.mpl_connect('axes_leave_event', fig_on_motion_callback)
-        cid_fig_leave = fig.canvas.mpl_connect('figure_leave_event', fig_on_motion_callback)
+            fig_on_resize_callback = functools.partial(fig_on_resize, fig, fig_elements, projected_polygons)
+            fig_on_motion_callback = functools.partial(fig_on_motion, fig, fig_ax1, fig_ax2, fig_elements,
+                                                       filtered_up_model_synthetic_frame_img, up_model_frames_idxs, projected_polygons)
+            cid_resize = fig.canvas.mpl_connect('resize_event', fig_on_resize_callback)
+            cid_motion = fig.canvas.mpl_connect('motion_notify_event', fig_on_motion_callback)
+            cid_axes_leave = fig.canvas.mpl_connect('axes_leave_event', fig_on_motion_callback)
+            cid_fig_leave = fig.canvas.mpl_connect('figure_leave_event', fig_on_motion_callback)
 
-        fig_on_resize_callback(None)
+            fig_on_resize_callback(None)
 
     # %%
 

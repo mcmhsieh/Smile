@@ -38,6 +38,7 @@ sys.path.append('../external/pytorch3d')
 import pytorch3d.transforms
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -3188,33 +3189,34 @@ if __name__ == '__main__':
                   np.sum(np.all(~np.isfinite(stitched_triangulated_points[:, :3]), axis=1)),
                   'of total triangulated points', stitched_triangulated_points.shape[0])
 
-            plt_data_path = output_dirpath / 'Retraced cross triangulated points' / f'{current_frame_idx:04d}.pickle'
-            plt_data_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(plt_data_path, 'wb') as pickle_file:
-                pickle.dump({'xsn': xsn,
-                             'ysn': ysn,
-                             'xsne': xsne,
-                             'ysne': ysne,
-                             'current_image_to_triangulated_point_idxs': current_image_to_triangulated_point_idxs,
-                             'retrace_triangulated_main_clusters': retrace_triangulated_main_clusters,
-                             'retraced_triangulated_points': retraced_triangulated_points},
-                            pickle_file)
+            if ipython_env:
+                plt_data_path = output_dirpath / 'Retraced cross triangulated points' / f'{current_frame_idx:04d}.pickle'
+                plt_data_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(plt_data_path, 'wb') as pickle_file:
+                    pickle.dump({'xsn': xsn,
+                                 'ysn': ysn,
+                                 'xsne': xsne,
+                                 'ysne': ysne,
+                                 'current_image_to_triangulated_point_idxs': current_image_to_triangulated_point_idxs,
+                                 'retrace_triangulated_main_clusters': retrace_triangulated_main_clusters,
+                                 'retraced_triangulated_points': retraced_triangulated_points},
+                                pickle_file)
 
-            """
-            plt.figure(figsize=(16, 10))
-            ax = plt.subplot(1, 1, 1, projection='3d')
-            ax.scatter(*stitched_triangulated_points[:-new_triangulated_points.shape[0], :3].T, s=2, c='b', alpha=0.2)
-            ax.scatter(*stitched_triangulated_points[-new_triangulated_points.shape[0]:, :3].T, s=2, c='r', alpha=0.2)
-            ax.set_xlim((-20, 20))
-            ax.set_ylim((-20, 20))
-            ax.set_zlim((0, 40))
-            ax.set_aspect('equal', adjustable='datalim')
-            ax.set_xlabel('X')
-            ax.set_ylabel('Y')
-            ax.set_zlabel('Z')
-            ax.view_init(elev=-135, azim=-90, roll=0)
-            plt.tight_layout()
-            """
+                """
+                plt.figure(figsize=(16, 10))
+                ax = plt.subplot(1, 1, 1, projection='3d')
+                ax.scatter(*stitched_triangulated_points[:-new_triangulated_points.shape[0], :3].T, s=2, c='b', alpha=0.2)
+                ax.scatter(*stitched_triangulated_points[-new_triangulated_points.shape[0]:, :3].T, s=2, c='r', alpha=0.2)
+                ax.set_xlim((-20, 20))
+                ax.set_ylim((-20, 20))
+                ax.set_zlim((0, 40))
+                ax.set_aspect('equal', adjustable='datalim')
+                ax.set_xlabel('X')
+                ax.set_ylabel('Y')
+                ax.set_zlabel('Z')
+                ax.view_init(elev=-135, azim=-90, roll=0)
+                plt.tight_layout()
+                """
 
 
         triangulated_point_projection_errs = collections.defaultdict(list)
@@ -3268,23 +3270,24 @@ if __name__ == '__main__':
 
         processed_frame_idxs.append(current_frame_idx)
 
-        plt_data_path = output_dirpath / 'Sequential point correspondences' / f'{current_frame_idx:04d}.pickle'
-        plt_data_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(plt_data_path, 'wb') as pickle_file:
-            pickle.dump({'xyfn_flow': xyfn_flow,
-                         'xsp': xsp,
-                         'ysp': ysp,
-                         'xsn': xsn,
-                         'ysn': ysn,
-                         'corres_idxs': corres_idxs},
-                        pickle_file)
+        if ipython_env:
+            plt_data_path = output_dirpath / 'Sequential point correspondences' / f'{current_frame_idx:04d}.pickle'
+            plt_data_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(plt_data_path, 'wb') as pickle_file:
+                pickle.dump({'xyfn_flow': xyfn_flow,
+                             'xsp': xsp,
+                             'ysp': ysp,
+                             'xsn': xsn,
+                             'ysn': ysn,
+                             'corres_idxs': corres_idxs},
+                            pickle_file)
 
         if exec_mode == 'next_key_frame' or (exec_mode == 'debug_key_frame' and current_frame_idx == debug_key_frame_idx):
             break
 
     # %%
 
-    if exec_mode != 'debug_key_frame' and len(key_frames_filepaths) in processed_frame_idxs:
+    if ipython_env and exec_mode != 'debug_key_frame' and len(key_frames_filepaths) in processed_frame_idxs:
 
         plt_data_dirpath = output_dirpath / 'Retraced cross triangulated points'
 
@@ -3441,16 +3444,16 @@ if __name__ == '__main__':
         vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
 
         view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
         while True:
             close_vis = not vis.poll_events()
             vis.update_renderer()
             new_view_status = vis.get_view_status()
             if new_view_status != view_status:
                 view_status = new_view_status
-                view_status_time = time.time()
-            elif time.time() > view_status_time + visualisation_idle_timeout:
+                view_status_time = time.monotonic()
+            elif time.monotonic() > view_status_time + visualisation_idle_timeout:
                 close_vis = True
             if close_vis:
                 break
@@ -3854,8 +3857,8 @@ if __name__ == '__main__':
             vis.add_geometry(camera_lines, reset_bounding_box=False)
 
         view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
         while True:
             close_vis = False
             geometries = []
@@ -3866,17 +3869,17 @@ if __name__ == '__main__':
                 vis.add_geometry(pcd, reset_bounding_box=False)
                 geometries.append(pcd)
 
-                start_time = time.time()
+                start_time = time.monotonic()
                 while True:
                     close_vis = not vis.poll_events()
                     vis.update_renderer()
                     new_view_status = vis.get_view_status()
                     if new_view_status != view_status:
                         view_status = new_view_status
-                        view_status_time = time.time()
-                    elif time.time() > view_status_time + visualisation_idle_timeout:
+                        view_status_time = time.monotonic()
+                    elif time.monotonic() > view_status_time + visualisation_idle_timeout:
                         close_vis = True
-                    if close_vis or time.time() > start_time + 1.0:
+                    if close_vis or time.monotonic() > start_time + 1.0:
                         break
 
                 if close_vis:
@@ -3977,23 +3980,25 @@ if __name__ == '__main__':
         vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
 
         view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
         while True:
             close_vis = not vis.poll_events()
             vis.update_renderer()
             new_view_status = vis.get_view_status()
             if new_view_status != view_status:
                 view_status = new_view_status
-                view_status_time = time.time()
-            elif time.time() > view_status_time + visualisation_idle_timeout:
+                view_status_time = time.monotonic()
+            elif time.monotonic() > view_status_time + visualisation_idle_timeout:
                 close_vis = True
             if close_vis:
                 break
 
         vis.destroy_window()
 
-        # %%
+    # %%
+
+    if exec_mode != 'debug_key_frame' and len(key_frames_filepaths) in processed_frame_idxs:
 
         model_camera_fxy = torch.tensor(np.diag(camera_matrix[:2, :2])[:, None], dtype=torch.float32, requires_grad=True)
         model_camera_cxy = torch.tensor(camera_matrix[:2, 2:], dtype=torch.float32, requires_grad=True)
@@ -4176,17 +4181,18 @@ if __name__ == '__main__':
         print('model_camera_cxy', model_camera_cxy.numpy(force=True).flatten())
         print('camera k1, k2, p1, p2', model_camera_k1.numpy(force=True), model_camera_k2.numpy(force=True), model_camera_p1.numpy(force=True), model_camera_p2.numpy(force=True))
 
-        plt.figure(figsize=(16, 10))
-        plt.suptitle('losses')
-        ax = plt.subplot(4, 1, 1)
-        plt.plot(losses)
-        ax = plt.subplot(4, 1, 2, sharex=ax)
-        plt.semilogy(losses)
-        ax = plt.subplot(4, 1, 3, sharex=ax)
-        plt.plot(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
-        ax = plt.subplot(4, 1, 4, sharex=ax)
-        plt.semilogy(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
-        plt.tight_layout()
+        if ipython_env:
+            plt.figure(figsize=(16, 10))
+            plt.suptitle('losses')
+            ax = plt.subplot(4, 1, 1)
+            plt.plot(losses)
+            ax = plt.subplot(4, 1, 2, sharex=ax)
+            plt.semilogy(losses)
+            ax = plt.subplot(4, 1, 3, sharex=ax)
+            plt.plot(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
+            ax = plt.subplot(4, 1, 4, sharex=ax)
+            plt.semilogy(np.arange(convergence_criterion['min_num_steps'], len(losses)), losses[convergence_criterion['min_num_steps']:])
+            plt.tight_layout()
 
         with torch.no_grad():
             bundle_projected_points = np.full(triangulated_image_points.shape, fill_value=np.nan, dtype=np.float32)
@@ -4246,127 +4252,129 @@ if __name__ == '__main__':
             object_points = model_triangulated_points[:3, image_points_mask]
             triangulated_rgb = model_triangulated_points[3:, image_points_mask].T
 
-            plt.figure('Optimised projected point correspondences', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'Frame idx: {frame_idx}')
-            ax = plt.subplot(2, 2, 1)
-            plt.imshow(np.require(img, dtype=np.uint8))
-            ax3 = plt.subplot(2, 2, 2, projection='3d')
-            ax3.scatter(*object_points, s=2, c=triangulated_rgb/255)
-            ax3.set_xlim((-20, 20))
-            ax3.set_ylim((-20, 20))
-            ax3.set_zlim((0, 40))
-            ax3.set_aspect('equal', adjustable='datalim')
-            ax3.set_xlabel('X')
-            ax3.set_ylabel('Y')
-            ax3.set_zlabel('Z')
-            ax3.view_init(elev=-135, azim=-90, roll=0)
-            ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
-            plt.scatter(*image_points, s=3, c=triangulated_rgb/255, marker='o')
-            plt.scatter(*projected_points, s=12, facecolors='none', edgecolors=triangulated_rgb/255, marker='o')
-            ax.set_aspect('equal')
-            ax.set_xlim((-20, img.shape[1] + 20))
-            ax.set_ylim((img.shape[0] + 20, -20))
-            ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
-            plt.scatter(*image_points, s=15*image_points_weights_magn, c='b', marker='o')
-            plt.scatter(*projected_points, s=15*image_points_weights_magn, c='y', marker='o')
-            ax.set_aspect('equal')
-            ax.set_xlim((-20, img.shape[1] + 20))
-            ax.set_ylim((img.shape[0] + 20, -20))
-            plt.tight_layout()
-            stash_fig_page()
+            if ipython_env:
+                plt.figure('Optimised projected point correspondences', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'Frame idx: {frame_idx}')
+                ax = plt.subplot(2, 2, 1)
+                plt.imshow(np.require(img, dtype=np.uint8))
+                ax3 = plt.subplot(2, 2, 2, projection='3d')
+                ax3.scatter(*object_points, s=2, c=triangulated_rgb/255)
+                ax3.set_xlim((-20, 20))
+                ax3.set_ylim((-20, 20))
+                ax3.set_zlim((0, 40))
+                ax3.set_aspect('equal', adjustable='datalim')
+                ax3.set_xlabel('X')
+                ax3.set_ylabel('Y')
+                ax3.set_zlabel('Z')
+                ax3.view_init(elev=-135, azim=-90, roll=0)
+                ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+                plt.scatter(*image_points, s=3, c=triangulated_rgb/255, marker='o')
+                plt.scatter(*projected_points, s=12, facecolors='none', edgecolors=triangulated_rgb/255, marker='o')
+                ax.set_aspect('equal')
+                ax.set_xlim((-20, img.shape[1] + 20))
+                ax.set_ylim((img.shape[0] + 20, -20))
+                ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
+                plt.scatter(*image_points, s=15*image_points_weights_magn, c='b', marker='o')
+                plt.scatter(*projected_points, s=15*image_points_weights_magn, c='y', marker='o')
+                ax.set_aspect('equal')
+                ax.set_xlim((-20, img.shape[1] + 20))
+                ax.set_ylim((img.shape[0] + 20, -20))
+                plt.tight_layout()
+                stash_fig_page()
 
         # %%
 
-        fig = plt.figure('Optimised triangulated points', figsize=(20, 10))
-        plt.clf()
-        ax0 = plt.subplot(3, 3, 1)
-        ax1 = plt.subplot(3, 3, 4, sharex=ax0, sharey=ax0)
-        ax2 = plt.subplot(3, 3, 7, sharex=ax1, sharey=ax1)
-        ax3a = plt.subplot(1, 3, 2, projection='3d')
-        ax3a.set_xlim((-20, 20))
-        ax3a.set_ylim((-20, 20))
-        ax3a.set_zlim((0, 40))
-        ax3a.set_aspect('equal', adjustable='datalim')
-        ax3a.set_xlabel('X')
-        ax3a.set_ylabel('Y')
-        ax3a.set_zlabel('Z')
-        ax3a.view_init(elev=-90, azim=-90, roll=0)
-        ax3b = plt.subplot(1, 3, 3, projection='3d')
-        ax3b.set_xlim((-20, 20))
-        ax3b.set_ylim((-20, 20))
-        ax3b.set_zlim((0, 40))
-        ax3b.set_aspect('equal', adjustable='datalim')
-        ax3b.set_xlabel('X')
-        ax3b.set_ylabel('Y')
-        ax3b.set_zlabel('Z')
-        ax3b.view_init(elev=-180, azim=-90, roll=0)
+        if ipython_env:
+            fig = plt.figure('Optimised triangulated points', figsize=(20, 10))
+            plt.clf()
+            ax0 = plt.subplot(3, 3, 1)
+            ax1 = plt.subplot(3, 3, 4, sharex=ax0, sharey=ax0)
+            ax2 = plt.subplot(3, 3, 7, sharex=ax1, sharey=ax1)
+            ax3a = plt.subplot(1, 3, 2, projection='3d')
+            ax3a.set_xlim((-20, 20))
+            ax3a.set_ylim((-20, 20))
+            ax3a.set_zlim((0, 40))
+            ax3a.set_aspect('equal', adjustable='datalim')
+            ax3a.set_xlabel('X')
+            ax3a.set_ylabel('Y')
+            ax3a.set_zlabel('Z')
+            ax3a.view_init(elev=-90, azim=-90, roll=0)
+            ax3b = plt.subplot(1, 3, 3, projection='3d')
+            ax3b.set_xlim((-20, 20))
+            ax3b.set_ylim((-20, 20))
+            ax3b.set_zlim((0, 40))
+            ax3b.set_aspect('equal', adjustable='datalim')
+            ax3b.set_xlabel('X')
+            ax3b.set_ylabel('Y')
+            ax3b.set_zlabel('Z')
+            ax3b.view_init(elev=-180, azim=-90, roll=0)
 
-        fig_state = {'frame_idx': 0}
-        def plot_new_fig_state(frame_idx_delta=0):
-            frame_idx = np.clip(fig_state['frame_idx'] + frame_idx_delta, 0, len(key_frame_images) - 1)
-            fig_state['frame_idx'] = frame_idx
-            img, gray = key_frame_images[frame_idx]
-            image_points_mask = bundle_image_points_weights_magn[frame_idx] >= 1e-2
-            projected_points = bundle_projected_points[frame_idx][:, image_points_mask]
-            image_points = bundle_image_points[frame_idx][:, image_points_mask]
-            image_points_weights_magn = bundle_image_points_weights_magn[frame_idx][image_points_mask]
-            object_points = model_triangulated_points[:3, image_points_mask]
-            triangulated_rgb = model_triangulated_points[3:, image_points_mask].T
+            fig_state = {'frame_idx': 0}
+            def plot_new_fig_state(frame_idx_delta=0):
+                frame_idx = np.clip(fig_state['frame_idx'] + frame_idx_delta, 0, len(key_frame_images) - 1)
+                fig_state['frame_idx'] = frame_idx
+                img, gray = key_frame_images[frame_idx]
+                image_points_mask = bundle_image_points_weights_magn[frame_idx] >= 1e-2
+                projected_points = bundle_projected_points[frame_idx][:, image_points_mask]
+                image_points = bundle_image_points[frame_idx][:, image_points_mask]
+                image_points_weights_magn = bundle_image_points_weights_magn[frame_idx][image_points_mask]
+                object_points = model_triangulated_points[:3, image_points_mask]
+                triangulated_rgb = model_triangulated_points[3:, image_points_mask].T
 
-            fig.suptitle(f'Frame idx: {frame_idx}')
-            ax0.cla()
-            ax0.imshow(np.require(img, dtype=np.uint8))
-            ax1.cla()
-            ax1.scatter(*image_points, s=2, c=triangulated_rgb/255, marker='o')
-            ax1.scatter(*projected_points, s=8, facecolors='none', edgecolors=triangulated_rgb/255, marker='o')
-            ax1.set_aspect('equal')
-            ax1.set_xlim((-20, img.shape[1] + 20))
-            ax1.set_ylim((img.shape[0] + 20, -20))
-            ax2.cla()
-            ax2.scatter(*image_points, s=5*image_points_weights_magn, c='b', marker='o')
-            ax2.scatter(*projected_points, s=5*image_points_weights_magn, c='y', marker='o')
-            ax2.set_aspect('equal')
-            ax2.set_xlim((-20, img.shape[1] + 20))
-            ax2.set_ylim((img.shape[0] + 20, -20))
+                fig.suptitle(f'Frame idx: {frame_idx}')
+                ax0.cla()
+                ax0.imshow(np.require(img, dtype=np.uint8))
+                ax1.cla()
+                ax1.scatter(*image_points, s=2, c=triangulated_rgb/255, marker='o')
+                ax1.scatter(*projected_points, s=8, facecolors='none', edgecolors=triangulated_rgb/255, marker='o')
+                ax1.set_aspect('equal')
+                ax1.set_xlim((-20, img.shape[1] + 20))
+                ax1.set_ylim((img.shape[0] + 20, -20))
+                ax2.cla()
+                ax2.scatter(*image_points, s=5*image_points_weights_magn, c='b', marker='o')
+                ax2.scatter(*projected_points, s=5*image_points_weights_magn, c='y', marker='o')
+                ax2.set_aspect('equal')
+                ax2.set_xlim((-20, img.shape[1] + 20))
+                ax2.set_ylim((img.shape[0] + 20, -20))
 
-            xlim = ax3a.get_xlim()
-            ylim = ax3a.get_ylim()
-            zlim = ax3a.get_zlim()
-            ax3a.cla()
-            ax3a.scatter(*object_points, s=2, c=triangulated_rgb/255)
-            ax3a.set_xlim(xlim)
-            ax3a.set_ylim(ylim)
-            ax3a.set_zlim(zlim)
+                xlim = ax3a.get_xlim()
+                ylim = ax3a.get_ylim()
+                zlim = ax3a.get_zlim()
+                ax3a.cla()
+                ax3a.scatter(*object_points, s=2, c=triangulated_rgb/255)
+                ax3a.set_xlim(xlim)
+                ax3a.set_ylim(ylim)
+                ax3a.set_zlim(zlim)
 
-            xlim = ax3b.get_xlim()
-            ylim = ax3b.get_ylim()
-            zlim = ax3b.get_zlim()
-            ax3b.cla()
-            ax3b.scatter(*object_points, s=2, c=triangulated_rgb/255)
-            ax3b.set_xlim(xlim)
-            ax3b.set_ylim(ylim)
-            ax3b.set_zlim(zlim)
+                xlim = ax3b.get_xlim()
+                ylim = ax3b.get_ylim()
+                zlim = ax3b.get_zlim()
+                ax3b.cla()
+                ax3b.scatter(*object_points, s=2, c=triangulated_rgb/255)
+                ax3b.set_xlim(xlim)
+                ax3b.set_ylim(ylim)
+                ax3b.set_zlim(zlim)
 
-            fig.canvas.draw_idle()
+                fig.canvas.draw_idle()
 
-        plot_new_fig_state()
+            plot_new_fig_state()
 
-        ax_prev = fig.add_axes([0.7, 0.05, 0.1, 0.075])
-        ax_next = fig.add_axes([0.81, 0.05, 0.1, 0.075])
-        button_prev = matplotlib.widgets.Button(ax_prev, 'Prev')
-        button_prev.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=-1))
-        button_next = matplotlib.widgets.Button(ax_next, 'Next')
-        button_next.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=1))
+            ax_prev = fig.add_axes([0.7, 0.05, 0.1, 0.075])
+            ax_next = fig.add_axes([0.81, 0.05, 0.1, 0.075])
+            button_prev = matplotlib.widgets.Button(ax_prev, 'Prev')
+            button_prev.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=-1))
+            button_next = matplotlib.widgets.Button(ax_next, 'Next')
+            button_next.on_clicked(lambda event: plot_new_fig_state(frame_idx_delta=1))
 
-        def disconnect_on_ax_clear(widget):
-            old_ax_clear_fn = widget.ax.clear
-            def new_ax_clear_fn():
-                widget.disconnect_events()
-                old_ax_clear_fn()
-            widget.ax.clear = new_ax_clear_fn
-        disconnect_on_ax_clear(button_prev)
-        disconnect_on_ax_clear(button_next)
+            def disconnect_on_ax_clear(widget):
+                old_ax_clear_fn = widget.ax.clear
+                def new_ax_clear_fn():
+                    widget.disconnect_events()
+                    old_ax_clear_fn()
+                widget.ax.clear = new_ax_clear_fn
+            disconnect_on_ax_clear(button_prev)
+            disconnect_on_ax_clear(button_next)
 
         # %%
 
@@ -4403,125 +4411,46 @@ if __name__ == '__main__':
 
         # %%
 
-        plt.figure(figsize=(16, 10))
-        ax = plt.subplot(1, 1, 1, projection='3d')
-        ax.scatter(*stitched_triangulated_points[post_optimise_triangulated_idxs, :3].T, s=2, c='b', alpha=0.2)
-        ax.scatter(*model_triangulated_points[:3, post_optimise_triangulated_idxs], s=2, c='r', alpha=0.2)
-        ax.set_xlim((-20, 20))
-        ax.set_ylim((-20, 20))
-        ax.set_zlim((0, 40))
-        ax.set_aspect('equal', adjustable='datalim')
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.view_init(elev=-135, azim=-90, roll=0)
-        plt.tight_layout()
+        if ipython_env:
+            plt.figure(figsize=(16, 10))
+            ax = plt.subplot(1, 1, 1, projection='3d')
+            ax.scatter(*stitched_triangulated_points[post_optimise_triangulated_idxs, :3].T, s=2, c='b', alpha=0.2)
+            ax.scatter(*model_triangulated_points[:3, post_optimise_triangulated_idxs], s=2, c='r', alpha=0.2)
+            ax.set_xlim((-20, 20))
+            ax.set_ylim((-20, 20))
+            ax.set_zlim((0, 40))
+            ax.set_aspect('equal', adjustable='datalim')
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            ax.view_init(elev=-135, azim=-90, roll=0)
+            plt.tight_layout()
 
         # %%
 
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(width=1024, height=768, left=200, top=200)
+        if ipython_env:
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(width=1024, height=768, left=200, top=200)
 
-        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                         [1, 0, 0],
-                                                                         [0, 1, 0],
-                                                                         [0, 0, 1]]),
-                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-        axes_geometry.scale(20, [0, 0, 0])
-        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        vis.add_geometry(axes_geometry, reset_bounding_box=True)
+            axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                             [1, 0, 0],
+                                                                             [0, 1, 0],
+                                                                             [0, 0, 1]]),
+                                                 o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+            axes_geometry.scale(20, [0, 0, 0])
+            axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+            vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-        ctr = vis.get_view_control()
-        ctr.set_lookat([0, 0, 0])
-        ctr.set_up([0, -1, 0])
-        # vector from the lookat point to the camera
-        # make gaze from the camera to lookat point left-ward and down-ward
-        ctr.set_front([0.5, -0.5, -0.5])
-        ctr.set_zoom(1.0)
-        ctr.set_constant_z_far(200.0)
+            ctr = vis.get_view_control()
+            ctr.set_lookat([0, 0, 0])
+            ctr.set_up([0, -1, 0])
+            # vector from the lookat point to the camera
+            # make gaze from the camera to lookat point left-ward and down-ward
+            ctr.set_front([0.5, -0.5, -0.5])
+            ctr.set_zoom(1.0)
+            ctr.set_constant_z_far(200.0)
 
-        for prev_camera_extrinsic, camera_extrinsic in zip([None] + camera_extrinsics[:-1], camera_extrinsics):
-            # The extrinsic matrix transforms from world coordinates to camera coordinates
-            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                            intrinsic=camera_intrinsic,
-                                                                            extrinsic=camera_extrinsic)
-            camera_lines.paint_uniform_color([0, 0.5, 1])
-            if prev_camera_extrinsic is not None:
-                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
-                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                            [1, 0, 0.5]]))
-            vis.add_geometry(camera_lines, reset_bounding_box=False)
-
-        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, post_optimise_triangulated_idxs].T))
-        pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, post_optimise_triangulated_idxs].T / 255)
-        vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
-
-        view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-        while True:
-            close_vis = not vis.poll_events()
-            vis.update_renderer()
-            new_view_status = vis.get_view_status()
-            if new_view_status != view_status:
-                view_status = new_view_status
-                view_status_time = time.time()
-            elif time.time() > view_status_time + visualisation_idle_timeout:
-                close_vis = True
-            if close_vis:
-                break
-
-        vis.destroy_window()
-
-        # %%
-
-        # Cumulative counts of 3D triangulated points after stitching each key frame
-        key_frame_cumul_num_stitched_triangulated_points = [0]
-        for stitched_key_frame_path in sorted(output_dirpath.glob('*.stitch.pickle')):
-            with open(stitched_key_frame_path, 'rb') as pickle_file:
-                data = pickle.load(pickle_file)
-                stitched_triangulated_points = data['stitched_triangulated_points']
-                key_frame_cumul_num_stitched_triangulated_points.append(stitched_triangulated_points.shape[0])
-
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(width=1024, height=768, left=200, top=200)
-
-        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                         [1, 0, 0],
-                                                                         [0, 1, 0],
-                                                                         [0, 0, 1]]),
-                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-        axes_geometry.scale(20, [0, 0, 0])
-        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        vis.add_geometry(axes_geometry, reset_bounding_box=True)
-
-        ctr = vis.get_view_control()
-        ctr.set_lookat([0, 0, 0])
-        ctr.set_up([0, -1, 0])
-        # vector from the lookat point to the camera
-        # make gaze from the camera to lookat point left-ward and down-ward
-        ctr.set_front([0.5, -0.5, -0.5])
-        ctr.set_zoom(1.0)
-        ctr.set_constant_z_far(200.0)
-
-        view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-        while True:
-            close_vis = False
-            geometries = []
-            for prev_camera_extrinsic, camera_extrinsic, start_idx, end_idx in zip([None] + camera_extrinsics[:-1], camera_extrinsics,
-                                                                                   [None] + key_frame_cumul_num_stitched_triangulated_points[:-1],
-                                                                                   key_frame_cumul_num_stitched_triangulated_points):
-                grayed_level = 0.9
-                for geometry in geometries:
-                    geometry.colors = o3d.utility.Vector3dVector(grayed_level - 0.95 * (grayed_level - np.array(geometry.colors)))
-                    vis.update_geometry(geometry)
-
+            for prev_camera_extrinsic, camera_extrinsic in zip([None] + camera_extrinsics[:-1], camera_extrinsics):
                 # The extrinsic matrix transforms from world coordinates to camera coordinates
                 camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
                                                                                 intrinsic=camera_intrinsic,
@@ -4536,38 +4465,120 @@ if __name__ == '__main__':
                     camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
                                                                                 [1, 0, 0.5]]))
                 vis.add_geometry(camera_lines, reset_bounding_box=False)
-                geometries.append(camera_lines)
 
-                if prev_camera_extrinsic is not None:
-                    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, start_idx:end_idx].T))
-                    pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, start_idx:end_idx].T / 255)
-                    pcd = pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
-                    vis.add_geometry(pcd, reset_bounding_box=False)
-                    geometries.append(pcd)
+            pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, post_optimise_triangulated_idxs].T))
+            pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, post_optimise_triangulated_idxs].T / 255)
+            vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
 
-                start_time = time.time()
-                while True:
-                    close_vis = not vis.poll_events()
-                    vis.update_renderer()
-                    new_view_status = vis.get_view_status()
-                    if new_view_status != view_status:
-                        view_status = new_view_status
-                        view_status_time = time.time()
-                    elif time.time() > view_status_time + visualisation_idle_timeout:
-                        close_vis = True
-                    if close_vis or time.time() > start_time + 1.0:
+            view_status = vis.get_view_status()
+            view_status_time = time.monotonic()
+            visualisation_idle_timeout = 60
+            while True:
+                close_vis = not vis.poll_events()
+                vis.update_renderer()
+                new_view_status = vis.get_view_status()
+                if new_view_status != view_status:
+                    view_status = new_view_status
+                    view_status_time = time.monotonic()
+                elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                    close_vis = True
+                if close_vis:
+                    break
+
+            vis.destroy_window()
+
+        # %%
+
+        if ipython_env:
+            # Cumulative counts of 3D triangulated points after stitching each key frame
+            key_frame_cumul_num_stitched_triangulated_points = [0]
+            for stitched_key_frame_path in sorted(output_dirpath.glob('*.stitch.pickle')):
+                with open(stitched_key_frame_path, 'rb') as pickle_file:
+                    data = pickle.load(pickle_file)
+                    stitched_triangulated_points = data['stitched_triangulated_points']
+                    key_frame_cumul_num_stitched_triangulated_points.append(stitched_triangulated_points.shape[0])
+
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(width=1024, height=768, left=200, top=200)
+
+            axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                             [1, 0, 0],
+                                                                             [0, 1, 0],
+                                                                             [0, 0, 1]]),
+                                                 o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+            axes_geometry.scale(20, [0, 0, 0])
+            axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+            vis.add_geometry(axes_geometry, reset_bounding_box=True)
+
+            ctr = vis.get_view_control()
+            ctr.set_lookat([0, 0, 0])
+            ctr.set_up([0, -1, 0])
+            # vector from the lookat point to the camera
+            # make gaze from the camera to lookat point left-ward and down-ward
+            ctr.set_front([0.5, -0.5, -0.5])
+            ctr.set_zoom(1.0)
+            ctr.set_constant_z_far(200.0)
+
+            view_status = vis.get_view_status()
+            view_status_time = time.monotonic()
+            visualisation_idle_timeout = 60
+            while True:
+                close_vis = False
+                geometries = []
+                for prev_camera_extrinsic, camera_extrinsic, start_idx, end_idx in zip([None] + camera_extrinsics[:-1], camera_extrinsics,
+                                                                                       [None] + key_frame_cumul_num_stitched_triangulated_points[:-1],
+                                                                                       key_frame_cumul_num_stitched_triangulated_points):
+                    grayed_level = 0.9
+                    for geometry in geometries:
+                        geometry.colors = o3d.utility.Vector3dVector(grayed_level - 0.95 * (grayed_level - np.array(geometry.colors)))
+                        vis.update_geometry(geometry)
+
+                    # The extrinsic matrix transforms from world coordinates to camera coordinates
+                    camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                                    intrinsic=camera_intrinsic,
+                                                                                    extrinsic=camera_extrinsic)
+                    camera_lines.paint_uniform_color([0, 0.5, 1])
+                    if prev_camera_extrinsic is not None:
+                        camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                                    np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                                    np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                        camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                                   [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                        camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                                    [1, 0, 0.5]]))
+                    vis.add_geometry(camera_lines, reset_bounding_box=False)
+                    geometries.append(camera_lines)
+
+                    if prev_camera_extrinsic is not None:
+                        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, start_idx:end_idx].T))
+                        pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, start_idx:end_idx].T / 255)
+                        pcd = pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
+                        vis.add_geometry(pcd, reset_bounding_box=False)
+                        geometries.append(pcd)
+
+                    start_time = time.monotonic()
+                    while True:
+                        close_vis = not vis.poll_events()
+                        vis.update_renderer()
+                        new_view_status = vis.get_view_status()
+                        if new_view_status != view_status:
+                            view_status = new_view_status
+                            view_status_time = time.monotonic()
+                        elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                            close_vis = True
+                        if close_vis or time.monotonic() > start_time + 1.0:
+                            break
+
+                    if close_vis:
                         break
 
                 if close_vis:
                     break
 
-            if close_vis:
-                break
+                for geometry in geometries:
+                    vis.remove_geometry(geometry, reset_bounding_box=False)
 
-            for geometry in geometries:
-                vis.remove_geometry(geometry, reset_bounding_box=False)
-
-        vis.destroy_window()
+            vis.destroy_window()
 
     # %%
 

@@ -23,6 +23,7 @@ import skimage
 import cv2
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -183,27 +184,28 @@ if __name__ == '__main__':
         flow_costs += 0.2 * np.power(blurs_and_distortions / blur_and_distortion_key_frame_target, 2)
         return flow_costs
 
-    plt.figure('Flow costs model', figsize=(16, 10))
-    plt.clf()
-    flow_displacements_grid, blurs_and_distortions_grid = np.meshgrid(np.arange(0.2, target_flow_displacement * 3, 0.2), np.arange(0.01, 9, 0.01))
-    flow_costs_grid = calc_flow_costs(flow_displacements_grid, blurs_and_distortions_grid)
-    ax = plt.subplot(1, 2, 1, projection='3d')
-    flow_costs_grid_masked = np.array(flow_costs_grid)
-    flow_costs_grid_masked[(flow_costs_grid_masked < 0) | (flow_costs_grid_masked > 5)] = np.nan
-    ax.plot_wireframe(flow_displacements_grid, blurs_and_distortions_grid, flow_costs_grid_masked)
-    ax.set_zlim((-0.5, 5.5))
-    ax.set_xlabel('flow_displacements')
-    ax.set_ylabel('motion_blurs + flow_distortions')
-    ax.set_zlabel('flow_costs')
-    ax.view_init(elev=80, azim=-90, roll=0)
-    ax = plt.subplot(1, 2, 2, projection='3d')
-    ax.contour(flow_displacements_grid, blurs_and_distortions_grid, flow_costs_grid, levels=np.arange(-0.1, 5.1, 0.1))
-    ax.set_zlim((-0.5, 5.5))
-    ax.set_xlabel('flow_displacements')
-    ax.set_ylabel('motion_blurs + flow_distortions')
-    ax.set_zlabel('flow_costs')
-    ax.view_init(elev=80, azim=-90, roll=0)
-    plt.tight_layout()
+    if ipython_env:
+        plt.figure('Flow costs model', figsize=(16, 10))
+        plt.clf()
+        flow_displacements_grid, blurs_and_distortions_grid = np.meshgrid(np.arange(0.2, target_flow_displacement * 3, 0.2), np.arange(0.01, 9, 0.01))
+        flow_costs_grid = calc_flow_costs(flow_displacements_grid, blurs_and_distortions_grid)
+        ax = plt.subplot(1, 2, 1, projection='3d')
+        flow_costs_grid_masked = np.array(flow_costs_grid)
+        flow_costs_grid_masked[(flow_costs_grid_masked < 0) | (flow_costs_grid_masked > 5)] = np.nan
+        ax.plot_wireframe(flow_displacements_grid, blurs_and_distortions_grid, flow_costs_grid_masked)
+        ax.set_zlim((-0.5, 5.5))
+        ax.set_xlabel('flow_displacements')
+        ax.set_ylabel('motion_blurs + flow_distortions')
+        ax.set_zlabel('flow_costs')
+        ax.view_init(elev=80, azim=-90, roll=0)
+        ax = plt.subplot(1, 2, 2, projection='3d')
+        ax.contour(flow_displacements_grid, blurs_and_distortions_grid, flow_costs_grid, levels=np.arange(-0.1, 5.1, 0.1))
+        ax.set_zlim((-0.5, 5.5))
+        ax.set_xlabel('flow_displacements')
+        ax.set_ylabel('motion_blurs + flow_distortions')
+        ax.set_zlabel('flow_costs')
+        ax.view_init(elev=80, azim=-90, roll=0)
+        plt.tight_layout()
 
     def calc_flow_displacement_and_distortion(img, yfp, xfp, xfn, yfn, ysg, xsg):
         xyfn_flow = np.full(img.shape[:2] + (2,), fill_value=np.nan, dtype=np.float32)
@@ -414,41 +416,42 @@ if __name__ == '__main__':
             if len(selected_key_frame_idxs) < 2:
                 plt.close('Flow costs')
 
-            plt.figure('Flow costs', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle('Ref key frame: {} {}'.format(*frame_image_stack[0]))
-            ax = plt.subplot(4, 2, 1)
-            plt.plot(prev_key_frame_idx + 1 + np.arange(len(flow_displacements)), flow_displacements, 'o-')
-            plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
-            plt.ylim((0, plt.ylim()[1]))
-            plt.title('flow_displacements')
-            plt.subplot(4, 2, 3, sharex=ax)
-            plt.plot(prev_key_frame_idx + 1 + np.arange(len(flow_distortions)), flow_distortions, 'o-')
-            plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
-            plt.ylim((0, plt.ylim()[1]))
-            plt.title('flow_distortions')
-            plt.subplot(4, 2, 5, sharex=ax)
-            plt.plot(prev_key_frame_idx + 1 + np.arange(len(motion_blurs)), motion_blurs, 'o-')
-            plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
-            plt.ylim((0, plt.ylim()[1]))
-            plt.title('motion_blurs')
-            plt.subplot(4, 2, 7, sharex=ax)
-            plt.plot(prev_key_frame_idx + 1 + np.arange(len(flow_costs)), flow_costs, 'o-')
-            plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
-            plt.ylim((-0.5, 5.5))
-            plt.title('flow_costs')
-            ax = plt.subplot(1, 2, 2, projection='3d')
-            ax.plot(flow_displacements, motion_blurs + flow_distortions, flow_costs, 'ko:')
-            flow_displacements_grid, blurs_and_distortions_grid = np.meshgrid(np.arange(0.2, target_flow_displacement * 3, 0.2), np.arange(0.01, 9, 0.01))
-            flow_costs_grid = calc_flow_costs(flow_displacements_grid, blurs_and_distortions_grid)
-            ax.contour(flow_displacements_grid, blurs_and_distortions_grid, flow_costs_grid, levels=np.arange(-0.1, 5.1, 0.1))
-            ax.set_zlim((-0.5, 5.5))
-            ax.set_xlabel('flow_displacements')
-            ax.set_ylabel('motion_blurs + flow_distortions')
-            ax.set_zlabel('flow_costs')
-            ax.view_init(elev=80, azim=-90, roll=0)
-            plt.tight_layout()
-            stash_fig_page()
+            if ipython_env:
+                plt.figure('Flow costs', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle('Ref key frame: {} {}'.format(*frame_image_stack[0]))
+                ax = plt.subplot(4, 2, 1)
+                plt.plot(prev_key_frame_idx + 1 + np.arange(len(flow_displacements)), flow_displacements, 'o-')
+                plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
+                plt.ylim((0, plt.ylim()[1]))
+                plt.title('flow_displacements')
+                plt.subplot(4, 2, 3, sharex=ax)
+                plt.plot(prev_key_frame_idx + 1 + np.arange(len(flow_distortions)), flow_distortions, 'o-')
+                plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
+                plt.ylim((0, plt.ylim()[1]))
+                plt.title('flow_distortions')
+                plt.subplot(4, 2, 5, sharex=ax)
+                plt.plot(prev_key_frame_idx + 1 + np.arange(len(motion_blurs)), motion_blurs, 'o-')
+                plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
+                plt.ylim((0, plt.ylim()[1]))
+                plt.title('motion_blurs')
+                plt.subplot(4, 2, 7, sharex=ax)
+                plt.plot(prev_key_frame_idx + 1 + np.arange(len(flow_costs)), flow_costs, 'o-')
+                plt.axvline(next_key_frame_indices_idx, linestyle='--', color='black')
+                plt.ylim((-0.5, 5.5))
+                plt.title('flow_costs')
+                ax = plt.subplot(1, 2, 2, projection='3d')
+                ax.plot(flow_displacements, motion_blurs + flow_distortions, flow_costs, 'ko:')
+                flow_displacements_grid, blurs_and_distortions_grid = np.meshgrid(np.arange(0.2, target_flow_displacement * 3, 0.2), np.arange(0.01, 9, 0.01))
+                flow_costs_grid = calc_flow_costs(flow_displacements_grid, blurs_and_distortions_grid)
+                ax.contour(flow_displacements_grid, blurs_and_distortions_grid, flow_costs_grid, levels=np.arange(-0.1, 5.1, 0.1))
+                ax.set_zlim((-0.5, 5.5))
+                ax.set_xlabel('flow_displacements')
+                ax.set_ylabel('motion_blurs + flow_distortions')
+                ax.set_zlabel('flow_costs')
+                ax.view_init(elev=80, azim=-90, roll=0)
+                plt.tight_layout()
+                stash_fig_page()
 
             for frame_offset_idx in range(next_key_frame_offset + 1):
                 current_frame_indices_idx = prev_key_frame_idx + 1 + frame_offset_idx
@@ -536,23 +539,24 @@ if __name__ == '__main__':
                     if len(selected_key_frame_idxs) < 2:
                         plt.close('Key frame point correspondences')
 
-                    fig = plt.figure('Key frame point correspondences', figsize=(16, 10))
-                    setup_new_fig_page()
-                    plt.suptitle(f'Previous, current frame idxs: {prev_key_frame_idx}, {current_frame_indices_idx}')
-                    ax = plt.subplot(2, 2, 1)
-                    plt.imshow(np.require(ref_img, dtype=np.uint8))
-                    plt.scatter(xsp, ysp, s=2, c='b', alpha=0.5)
-                    ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
-                    plt.imshow(np.require(img, dtype=np.uint8))
-                    plt.scatter(xsn, ysn, s=2, c='b', alpha=0.5)
-                    ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
-                    plt.imshow(img_warp / 255)
-                    plt.scatter(xsp, ysp, s=2, c='b', alpha=0.5)
-                    ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
-                    plt.imshow(np.clip((ref_img.astype(np.float32) - img_warp) / 255 + 0.5, 0, 1))
-                    plt.scatter(xsp, ysp, s=2, c='b', alpha=0.5)
-                    plt.tight_layout()
-                    stash_fig_page()
+                    if ipython_env:
+                        fig = plt.figure('Key frame point correspondences', figsize=(16, 10))
+                        setup_new_fig_page()
+                        plt.suptitle(f'Previous, current frame idxs: {prev_key_frame_idx}, {current_frame_indices_idx}')
+                        ax = plt.subplot(2, 2, 1)
+                        plt.imshow(np.require(ref_img, dtype=np.uint8))
+                        plt.scatter(xsp, ysp, s=2, c='b', alpha=0.5)
+                        ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
+                        plt.imshow(np.require(img, dtype=np.uint8))
+                        plt.scatter(xsn, ysn, s=2, c='b', alpha=0.5)
+                        ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+                        plt.imshow(img_warp / 255)
+                        plt.scatter(xsp, ysp, s=2, c='b', alpha=0.5)
+                        ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
+                        plt.imshow(np.clip((ref_img.astype(np.float32) - img_warp) / 255 + 0.5, 0, 1))
+                        plt.scatter(xsp, ysp, s=2, c='b', alpha=0.5)
+                        plt.tight_layout()
+                        stash_fig_page()
 
                 filename = f'{current_frame_time.strftime("%Y%m%d-%H%M%S%f")}.{current_frame_index:03d}.flow.{current_frame_type}.pickle'
                 output_path = output_dirpath / filename
@@ -614,27 +618,28 @@ if __name__ == '__main__':
 
     # %%
 
-    fig = plt.figure('Flow displacement', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(3, 1, 1)
-    plt.plot(*np.array(frame_flow_displacements)[:, [0, 1]].T)
-    flow_displacements = np.full((max(idx for idx, _, _ in frame_flow_displacements) + 1,), fill_value=np.nan)
-    for idx, value, _ in frame_flow_displacements:
-        flow_displacements[idx] = value
-    plt.plot(selected_key_frame_idxs, flow_displacements[selected_key_frame_idxs], color='g', linestyle='--', marker='o')
-    plt.ylabel('flow displacement')
-    ax = plt.subplot(3, 1, 2, sharex=ax)
-    plt.plot(*np.array(frame_flow_displacements)[:, [0, 2]].T)
-    flow_distortions = np.full((max(idx for idx, _, _ in frame_flow_displacements) + 1,), fill_value=np.nan)
-    for idx, _, value in frame_flow_displacements:
-        flow_distortions[idx] = value
-    plt.plot(selected_key_frame_idxs, flow_distortions[selected_key_frame_idxs], color='g', linestyle='--', marker='o')
-    plt.ylabel('flow distortion')
-    ax = plt.subplot(3, 1, 3, sharex=ax)
-    plt.plot(frame_motion_blurs)
-    plt.plot(selected_key_frame_idxs, frame_motion_blurs[selected_key_frame_idxs], color='g', linestyle='--', marker='o')
-    plt.ylabel('motion blur')
-    plt.tight_layout()
+    if ipython_env:
+        fig = plt.figure('Flow displacement', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(3, 1, 1)
+        plt.plot(*np.array(frame_flow_displacements)[:, [0, 1]].T)
+        flow_displacements = np.full((max(idx for idx, _, _ in frame_flow_displacements) + 1,), fill_value=np.nan)
+        for idx, value, _ in frame_flow_displacements:
+            flow_displacements[idx] = value
+        plt.plot(selected_key_frame_idxs, flow_displacements[selected_key_frame_idxs], color='g', linestyle='--', marker='o')
+        plt.ylabel('flow displacement')
+        ax = plt.subplot(3, 1, 2, sharex=ax)
+        plt.plot(*np.array(frame_flow_displacements)[:, [0, 2]].T)
+        flow_distortions = np.full((max(idx for idx, _, _ in frame_flow_displacements) + 1,), fill_value=np.nan)
+        for idx, _, value in frame_flow_displacements:
+            flow_distortions[idx] = value
+        plt.plot(selected_key_frame_idxs, flow_distortions[selected_key_frame_idxs], color='g', linestyle='--', marker='o')
+        plt.ylabel('flow distortion')
+        ax = plt.subplot(3, 1, 3, sharex=ax)
+        plt.plot(frame_motion_blurs)
+        plt.plot(selected_key_frame_idxs, frame_motion_blurs[selected_key_frame_idxs], color='g', linestyle='--', marker='o')
+        plt.ylabel('motion blur')
+        plt.tight_layout()
 
     # %%
 

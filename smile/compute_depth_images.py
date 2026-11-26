@@ -33,6 +33,7 @@ import shapely
 import trimesh
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -212,16 +213,16 @@ if __name__ == '__main__':
             vis.add_geometry(geometry, reset_bounding_box=False)
 
         view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
         while True:
             close_vis = not vis.poll_events()
             vis.update_renderer()
             new_view_status = vis.get_view_status()
             if new_view_status != view_status:
                 view_status = new_view_status
-                view_status_time = time.time()
-            elif time.time() > view_status_time + visualisation_idle_timeout:
+                view_status_time = time.monotonic()
+            elif time.monotonic() > view_status_time + visualisation_idle_timeout:
                 close_vis = True
             if close_vis:
                 break
@@ -1008,7 +1009,7 @@ if __name__ == '__main__':
                     frame_depth_images[next_frame_idx] = (np.array(rgbd_image.depth, dtype=np.float32), normal_img,
                                                           uvs12_attenuated_confidence_map.astype(np.float32))
 
-                    if True:
+                    if ipython_env:
                         plt.figure('RGBD disparity', figsize=(24, 12))
                         setup_new_fig_page()
                         rvec1, _ = cv2.Rodrigues(R1)
@@ -1055,7 +1056,7 @@ if __name__ == '__main__':
                         plt.tight_layout()
                         stash_fig_page()
 
-                    if True:
+                    if ipython_env:
                         plt.figure('RGBD dense triangulated points', figsize=(24, 12))
                         setup_new_fig_page()
                         plt.suptitle(f'rgbd, next frame idxs: {rgbd_frame_idx}, {fraction_idx_to_str(next_frame_idx)}')
@@ -1095,98 +1096,102 @@ if __name__ == '__main__':
 
     # %%
 
-    with shelve.open(output_path) as depth_images:
-        depth_image_frame_idxs = set(map(int, depth_images.keys()))
+    if ipython_env:
+        with shelve.open(output_path) as depth_images:
+            depth_image_frame_idxs = set(map(int, depth_images.keys()))
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=1024, height=768, left=200, top=200)
 
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
+        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                         [1, 0, 0],
+                                                                         [0, 1, 0],
+                                                                         [0, 0, 1]]),
+                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+        axes_geometry.scale(20, [0, 0, 0])
+        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0, 0, 0])
+        ctr.set_up([0, -1, 0])
+        # vector from the lookat point to the camera
+        # make gaze from the camera to lookat point left-ward and down-ward
+        ctr.set_front([0.5, -0.5, -0.5])
+        ctr.set_zoom(1.0)
+        ctr.set_constant_z_far(200.0)
 
-    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, post_optimise_triangulated_idxs_mask].T))
-    pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, post_optimise_triangulated_idxs_mask].T / 255)
-    vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
+        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_triangulated_points[:3, post_optimise_triangulated_idxs_mask].T))
+        pcd.colors = o3d.utility.Vector3dVector(model_triangulated_points[3:, post_optimise_triangulated_idxs_mask].T / 255)
+        vis.add_geometry(pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100])), reset_bounding_box=False)
 
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = False
-        geometries = []
-        for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
-            # The extrinsic matrix transforms from world coordinates to camera coordinates
-            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                            intrinsic=camera_intrinsic,
-                                                                            extrinsic=camera_extrinsic)
-            camera_lines.paint_uniform_color([0, 0.5, 1])
-            if prev_camera_extrinsic is not None:
-                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
-                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                            [1, 0, 0.5]]))
-            vis.add_geometry(camera_lines, reset_bounding_box=False)
-            geometries.append(camera_lines)
+        view_status = vis.get_view_status()
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
+        while True:
+            close_vis = False
+            geometries = []
+            for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
+                # The extrinsic matrix transforms from world coordinates to camera coordinates
+                camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                                intrinsic=camera_intrinsic,
+                                                                                extrinsic=camera_extrinsic)
+                camera_lines.paint_uniform_color([0, 0.5, 1])
+                if prev_camera_extrinsic is not None:
+                    camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                                np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                                np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                    camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                               [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                    camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                                [1, 0, 0.5]]))
+                vis.add_geometry(camera_lines, reset_bounding_box=False)
+                geometries.append(camera_lines)
 
-            pcds = []
-            if rgbd_frame_idx in depth_image_frame_idxs:
-                with shelve.open(output_path) as depth_images:
-                    frame_depth_images = depth_images[str(rgbd_frame_idx)]
-                for depth_img, normal_img, confidence_map in frame_depth_images.values():
-                    # Depth values larger than depth_trunc are truncated to 0
-                    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(filtered_frame_images[rgbd_frame_idx]),
-                                                                                    o3d.geometry.Image(depth_img),
-                                                                                    depth_scale=1.0, depth_trunc=np.inf,
-                                                                                    convert_rgb_to_intensity=False)
+                pcds = []
+                if rgbd_frame_idx in depth_image_frame_idxs:
+                    with shelve.open(output_path) as depth_images:
+                        frame_depth_images = depth_images[str(rgbd_frame_idx)]
+                    for depth_img, normal_img, confidence_map in frame_depth_images.values():
+                        # Depth values larger than depth_trunc are truncated to 0
+                        rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(filtered_frame_images[rgbd_frame_idx]),
+                                                                                        o3d.geometry.Image(depth_img),
+                                                                                        depth_scale=1.0, depth_trunc=np.inf,
+                                                                                        convert_rgb_to_intensity=False)
 
-                    rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
-                                                                              o3d.camera.PinholeCameraIntrinsic(np.array(rgbd_image.depth).shape[1],
-                                                                                                                np.array(rgbd_image.depth).shape[0],
-                                                                                                                camera_intrinsic),
-                                                                              camera_extrinsic)
-                    #rgbd_pcd = rgbd_pcd.voxel_down_sample(voxel_size=0.1)
-                    rgbd_pcd = rgbd_pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
-                    pcds.append(rgbd_pcd)
-            else:
-                pcds.append(None)
+                        rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
+                                                                                  o3d.camera.PinholeCameraIntrinsic(np.array(rgbd_image.depth).shape[1],
+                                                                                                                    np.array(rgbd_image.depth).shape[0],
+                                                                                                                    camera_intrinsic),
+                                                                                  camera_extrinsic)
+                        #rgbd_pcd = rgbd_pcd.voxel_down_sample(voxel_size=0.1)
+                        rgbd_pcd = rgbd_pcd.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
+                        pcds.append(rgbd_pcd)
+                else:
+                    pcds.append(None)
 
-            for pcd in pcds:
-                if pcd is not None:
-                    vis.add_geometry(pcd, reset_bounding_box=False)
+                for pcd in pcds:
+                    if pcd is not None:
+                        vis.add_geometry(pcd, reset_bounding_box=False)
 
-                start_time = time.time()
-                while True:
-                    close_vis = not vis.poll_events()
-                    vis.update_renderer()
-                    new_view_status = vis.get_view_status()
-                    if new_view_status != view_status:
-                        view_status = new_view_status
-                        view_status_time = time.time()
-                    elif time.time() > view_status_time + visualisation_idle_timeout:
-                        close_vis = True
-                    if close_vis or time.time() > start_time + 0.05:
+                    start_time = time.monotonic()
+                    while True:
+                        close_vis = not vis.poll_events()
+                        vis.update_renderer()
+                        new_view_status = vis.get_view_status()
+                        if new_view_status != view_status:
+                            view_status = new_view_status
+                            view_status_time = time.monotonic()
+                        elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                            close_vis = True
+                        if close_vis or time.monotonic() > start_time + 0.05:
+                            break
+
+                    if pcd is not None:
+                        vis.remove_geometry(pcd, reset_bounding_box=False)
+
+                    if close_vis:
                         break
-
-                if pcd is not None:
-                    vis.remove_geometry(pcd, reset_bounding_box=False)
 
                 if close_vis:
                     break
@@ -1194,13 +1199,10 @@ if __name__ == '__main__':
             if close_vis:
                 break
 
-        if close_vis:
-            break
+            for geometry in geometries:
+                vis.remove_geometry(geometry, reset_bounding_box=False)
 
-        for geometry in geometries:
-            vis.remove_geometry(geometry, reset_bounding_box=False)
-
-    vis.destroy_window()
+        vis.destroy_window()
 
     # %%
 

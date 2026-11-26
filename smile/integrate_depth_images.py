@@ -42,6 +42,7 @@ import psutil
 joblib.externals.loky.backend.context.physical_cores_cache = psutil.cpu_count(logical=False)
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -188,16 +189,16 @@ if __name__ == '__main__':
             vis.add_geometry(geometry, reset_bounding_box=False)
 
         view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
         while True:
             close_vis = not vis.poll_events()
             vis.update_renderer()
             new_view_status = vis.get_view_status()
             if new_view_status != view_status:
                 view_status = new_view_status
-                view_status_time = time.time()
-            elif time.time() > view_status_time + visualisation_idle_timeout:
+                view_status_time = time.monotonic()
+            elif time.monotonic() > view_status_time + visualisation_idle_timeout:
                 close_vis = True
             if close_vis:
                 break
@@ -395,20 +396,21 @@ if __name__ == '__main__':
     interframe_orbit_arc_curvature = np.array(interframe_orbit_arc_curvature)
     interframe_triangulated_overlap = np.array(interframe_triangulated_overlap)
 
-    plt.figure('Interframe dissimilarities', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(2, 3, 1)
-    plt.imshow(interframe_angles)
-    plt.title('interframe_angles')
-    ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-    vmaxabs = np.max(np.abs(interframe_orbit_arc_curvature))
-    plt.imshow(interframe_orbit_arc_curvature, vmin=-vmaxabs, vmax=vmaxabs, cmap='seismic')
-    plt.title('interframe_orbit_arc_curvature')
-    ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
-    plt.imshow(interframe_triangulated_overlap, vmin=0, vmax=1, cmap='jet', interpolation='none')
-    plt.title('interframe_triangulated_overlap')
-    plt.subplot(2, 3, 3)
-    plt.tight_layout()
+    if ipython_env:
+        plt.figure('Interframe dissimilarities', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(2, 3, 1)
+        plt.imshow(interframe_angles)
+        plt.title('interframe_angles')
+        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+        vmaxabs = np.max(np.abs(interframe_orbit_arc_curvature))
+        plt.imshow(interframe_orbit_arc_curvature, vmin=-vmaxabs, vmax=vmaxabs, cmap='seismic')
+        plt.title('interframe_orbit_arc_curvature')
+        ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+        plt.imshow(interframe_triangulated_overlap, vmin=0, vmax=1, cmap='jet', interpolation='none')
+        plt.title('interframe_triangulated_overlap')
+        plt.subplot(2, 3, 3)
+        plt.tight_layout()
 
     # %%
 
@@ -479,70 +481,71 @@ if __name__ == '__main__':
         print('GMM n_components, stress, n_iter, gm_component_intersection',
               n_components, stress, n_iter, gm_component_intersection)
 
-        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
-        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
-        if n_components == 2:
-            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'n_components: {n_components}')
-            ax = plt.subplot(1, 1, 1)
-            plt.plot(*embedding.T, 'o-', alpha=0.5)
-            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
-                plt.text(*xy, f'{frame_idx}')
-            ax.set_aspect('equal', adjustable='datalim')
-            plt.tight_layout()
-            stash_fig_page()
-        elif n_components >= 3:
-            if n_components > 3:
-                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
-                mds.fit(embedding)
-                embedding_3d = mds.embedding_
-            else:
-                embedding_3d = embedding
-            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'n_components: {n_components}')
-            ax3 = plt.subplot(1, 1, 1, projection='3d')
-            ax3.plot(*embedding_3d.T, 'o-', alpha=0.5)
-            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
-                ax3.text(*xyz, f'{frame_idx}')
-            ax3.set_aspect('equal', adjustable='datalim')
-            ax3.set_xlabel('X')
-            ax3.set_ylabel('Y')
-            ax3.set_zlabel('Z')
-            plt.tight_layout()
-            stash_fig_page()
+        if ipython_env:
+            colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+            marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+            if n_components == 2:
+                plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'n_components: {n_components}')
+                ax = plt.subplot(1, 1, 1)
+                plt.plot(*embedding.T, 'o-', alpha=0.5)
+                for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                    plt.text(*xy, f'{frame_idx}')
+                ax.set_aspect('equal', adjustable='datalim')
+                plt.tight_layout()
+                stash_fig_page()
+            elif n_components >= 3:
+                if n_components > 3:
+                    mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                    mds.fit(embedding)
+                    embedding_3d = mds.embedding_
+                else:
+                    embedding_3d = embedding
+                plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'n_components: {n_components}')
+                ax3 = plt.subplot(1, 1, 1, projection='3d')
+                ax3.plot(*embedding_3d.T, 'o-', alpha=0.5)
+                for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                    ax3.text(*xyz, f'{frame_idx}')
+                ax3.set_aspect('equal', adjustable='datalim')
+                ax3.set_xlabel('X')
+                ax3.set_ylabel('Y')
+                ax3.set_zlabel('Z')
+                plt.tight_layout()
+                stash_fig_page()
 
-        plt.figure('Embedding costs', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle(f'n_components: {n_components}')
-        ax = plt.subplot(2, 3, 1)
-        plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
-        plt.title('interframe_dissimilarities')
-        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-        plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
-        plt.title('interframe_dissimilarity_weights')
-        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-        plt.imshow(embedding_costs, cmap='jet', interpolation='none')
-        plt.title('embedding_costs')
-        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-        plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
-        plt.title('embedding_costs / interframe_dissimilarities')
-        plt.subplot(2, 3, 6)
-        bins = np.linspace(0, 1, 51)
-        plt.hist(embedding_cost_values, bins=bins, density=True)
-        for component_idx in np.argsort(gm.means_[:, 0]):
-            plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
-                                                                             scale=np.sqrt(gm.covariances_[component_idx, 0])))
-        plt.axvline(gm_component_intersection, color='blue', linestyle='--')
-        plt.plot(gm_component_intersection,
-                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
-                                                                       loc=gm.means_[component_idxs[0], 0],
-                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
-                 'bo')
-        plt.title('embedding_cost_values')
-        plt.tight_layout()
-        stash_fig_page()
+            plt.figure('Embedding costs', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(2, 3, 1)
+            plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
+            plt.title('interframe_dissimilarities')
+            ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+            plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
+            plt.title('interframe_dissimilarity_weights')
+            ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+            plt.imshow(embedding_costs, cmap='jet', interpolation='none')
+            plt.title('embedding_costs')
+            ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+            plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
+            plt.title('embedding_costs / interframe_dissimilarities')
+            plt.subplot(2, 3, 6)
+            bins = np.linspace(0, 1, 51)
+            plt.hist(embedding_cost_values, bins=bins, density=True)
+            for component_idx in np.argsort(gm.means_[:, 0]):
+                plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
+                                                                                 scale=np.sqrt(gm.covariances_[component_idx, 0])))
+            plt.axvline(gm_component_intersection, color='blue', linestyle='--')
+            plt.plot(gm_component_intersection,
+                     gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
+                                                                           loc=gm.means_[component_idxs[0], 0],
+                                                                           scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                     'bo')
+            plt.title('embedding_cost_values')
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
@@ -593,7 +596,8 @@ if __name__ == '__main__':
 
     combined_rgbd_pcd_confidences = np.array(combined_rgbd_pcd_confidences)
 
-    #visualise_geometries([combined_rgbd_pcd])
+    #if ipython_env:
+    #    visualise_geometries([combined_rgbd_pcd])
 
     # %%
 
@@ -625,7 +629,8 @@ if __name__ == '__main__':
             octree = o3d.geometry.Octree(max_depth=6)
             octree.convert_from_point_cloud(octree_pcd, size_expand=0.0)
 
-            #visualise_geometries([octree])
+            #if ipython_env:
+            #    visualise_geometries([octree])
 
             node_sum_confidences = []
             def traverse_fn(node, node_info):
@@ -655,17 +660,18 @@ if __name__ == '__main__':
             projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_node_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
             frame_projected_points.append(projected_points)
 
-            projected_points_sizes = [node_sum_confidence for node_sum_confidence, colour in peak_node_sum_confidences.values()]
-            projected_points_colours = [colour for node_sum_confidence, colour in peak_node_sum_confidences.values()]
+            if ipython_env:
+                projected_points_sizes = [node_sum_confidence for node_sum_confidence, colour in peak_node_sum_confidences.values()]
+                projected_points_colours = [colour for node_sum_confidence, colour in peak_node_sum_confidences.values()]
 
-            plt.figure('Projected point confidences', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'frame idx: {ref_frame_idx}')
-            plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
-            plt.ylim(plt.ylim()[::-1])
-            plt.axis('equal')
-            plt.tight_layout()
-            stash_fig_page()
+                plt.figure('Projected point confidences', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'frame idx: {ref_frame_idx}')
+                plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+                plt.ylim(plt.ylim()[::-1])
+                plt.axis('equal')
+                plt.tight_layout()
+                stash_fig_page()
 
     elif False:
         combined_rgbd_pcd_points = np.array(combined_rgbd_pcd.points)
@@ -714,17 +720,18 @@ if __name__ == '__main__':
             projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_voxel_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
             frame_projected_points.append(projected_points)
 
-            projected_points_sizes = [voxel_sum_confidence for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
-            projected_points_colours = [colour for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+            if ipython_env:
+                projected_points_sizes = [voxel_sum_confidence for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+                projected_points_colours = [colour for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
 
-            plt.figure('Projected point confidences', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'frame idx: {ref_frame_idx}')
-            plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
-            plt.ylim(plt.ylim()[::-1])
-            plt.axis('equal')
-            plt.tight_layout()
-            stash_fig_page()
+                plt.figure('Projected point confidences', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'frame idx: {ref_frame_idx}')
+                plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+                plt.ylim(plt.ylim()[::-1])
+                plt.axis('equal')
+                plt.tight_layout()
+                stash_fig_page()
 
     else:
         combined_rgbd_pcd_points = torch.tensor(np.array(combined_rgbd_pcd.points), dtype=torch.float32)
@@ -779,17 +786,18 @@ if __name__ == '__main__':
             projected_points = camera_intrinsic_synthetic[:2, :2] @ np.array(list(peak_voxel_sum_confidences.keys())).T + camera_intrinsic_synthetic[:2, 2:]
             frame_projected_points.append(projected_points)
 
-            projected_points_sizes = [voxel_sum_confidence for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
-            projected_points_colours = [colour for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+            if ipython_env:
+                projected_points_sizes = [voxel_sum_confidence for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
+                projected_points_colours = [colour for voxel_sum_confidence, colour in peak_voxel_sum_confidences.values()]
 
-            plt.figure('Projected point confidences', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'frame idx: {ref_frame_idx}')
-            plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
-            plt.ylim(plt.ylim()[::-1])
-            plt.axis('equal')
-            plt.tight_layout()
-            stash_fig_page()
+                plt.figure('Projected point confidences', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'frame idx: {ref_frame_idx}')
+                plt.scatter(*projected_points, s=projected_points_sizes, c=projected_points_colours)
+                plt.ylim(plt.ylim()[::-1])
+                plt.axis('equal')
+                plt.tight_layout()
+                stash_fig_page()
 
     # %%
 
@@ -1020,91 +1028,92 @@ if __name__ == '__main__':
 
     # %%
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
+    if ipython_env:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=1024, height=768, left=200, top=200)
 
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
+        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                         [1, 0, 0],
+                                                                         [0, 1, 0],
+                                                                         [0, 0, 1]]),
+                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+        axes_geometry.scale(20, [0, 0, 0])
+        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0, 0, 0])
+        ctr.set_up([0, -1, 0])
+        # vector from the lookat point to the camera
+        # make gaze from the camera to lookat point left-ward and down-ward
+        ctr.set_front([0.5, -0.5, -0.5])
+        ctr.set_zoom(1.0)
+        ctr.set_constant_z_far(200.0)
 
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = False
-        geometries = []
-        for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
-            # The extrinsic matrix transforms from world coordinates to camera coordinates
-            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                            intrinsic=camera_intrinsic,
-                                                                            extrinsic=camera_extrinsic)
-            camera_lines.paint_uniform_color([0, 0.5, 1])
-            if prev_camera_extrinsic is not None:
-                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
-                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                            [1, 0, 0.5]]))
-            vis.add_geometry(camera_lines, reset_bounding_box=False)
-            geometries.append(camera_lines)
+        view_status = vis.get_view_status()
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
+        while True:
+            close_vis = False
+            geometries = []
+            for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
+                # The extrinsic matrix transforms from world coordinates to camera coordinates
+                camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                                intrinsic=camera_intrinsic,
+                                                                                extrinsic=camera_extrinsic)
+                camera_lines.paint_uniform_color([0, 0.5, 1])
+                if prev_camera_extrinsic is not None:
+                    camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                                np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                                np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                    camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                               [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                    camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                                [1, 0, 0.5]]))
+                vis.add_geometry(camera_lines, reset_bounding_box=False)
+                geometries.append(camera_lines)
 
-            synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[rgbd_frame_idx]
+                synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[rgbd_frame_idx]
 
-            # Depth values larger than depth_trunc are truncated to 0
-            rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(np.nan_to_num(color_img, nan=127).astype(np.uint8)),
-                                                                            o3d.geometry.Image(depth_img),
-                                                                            depth_scale=1.0, depth_trunc=np.inf,
-                                                                            convert_rgb_to_intensity=False)
+                # Depth values larger than depth_trunc are truncated to 0
+                rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(np.nan_to_num(color_img, nan=127).astype(np.uint8)),
+                                                                                o3d.geometry.Image(depth_img),
+                                                                                depth_scale=1.0, depth_trunc=np.inf,
+                                                                                convert_rgb_to_intensity=False)
 
-            rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
-                                                                      o3d.camera.PinholeCameraIntrinsic(np.array(rgbd_image.depth).shape[1],
-                                                                                                        np.array(rgbd_image.depth).shape[0],
-                                                                                                        camera_intrinsic_stepped),
-                                                                      synthetic_camera_extrinsic)
+                rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
+                                                                          o3d.camera.PinholeCameraIntrinsic(np.array(rgbd_image.depth).shape[1],
+                                                                                                            np.array(rgbd_image.depth).shape[0],
+                                                                                                            camera_intrinsic_stepped),
+                                                                          synthetic_camera_extrinsic)
 
-            vis.add_geometry(rgbd_pcd, reset_bounding_box=False)
+                vis.add_geometry(rgbd_pcd, reset_bounding_box=False)
 
-            start_time = time.time()
-            while True:
-                close_vis = not vis.poll_events()
-                vis.update_renderer()
-                new_view_status = vis.get_view_status()
-                if new_view_status != view_status:
-                    view_status = new_view_status
-                    view_status_time = time.time()
-                elif time.time() > view_status_time + visualisation_idle_timeout:
-                    close_vis = True
-                if close_vis or time.time() > start_time + 0.05:
+                start_time = time.monotonic()
+                while True:
+                    close_vis = not vis.poll_events()
+                    vis.update_renderer()
+                    new_view_status = vis.get_view_status()
+                    if new_view_status != view_status:
+                        view_status = new_view_status
+                        view_status_time = time.monotonic()
+                    elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                        close_vis = True
+                    if close_vis or time.monotonic() > start_time + 0.05:
+                        break
+
+                vis.remove_geometry(rgbd_pcd, reset_bounding_box=False)
+
+                if close_vis:
                     break
-
-            vis.remove_geometry(rgbd_pcd, reset_bounding_box=False)
 
             if close_vis:
                 break
 
-        if close_vis:
-            break
+            for geometry in geometries:
+                vis.remove_geometry(geometry, reset_bounding_box=False)
 
-        for geometry in geometries:
-            vis.remove_geometry(geometry, reset_bounding_box=False)
-
-    vis.destroy_window()
+        vis.destroy_window()
 
     # %%
 
@@ -1245,27 +1254,28 @@ if __name__ == '__main__':
 
         model_depth_images.append((model_depth_img, model_depth_confidence))
 
-        plt.figure('Optimised integrated weighted depth', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle(f'frame idx: {ref_frame_idx}')
-        ax = plt.subplot(2, 3, 1)
-        plt.imshow(depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
-        plt.title('integrated depth')
-        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-        plt.imshow(model_depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
-        plt.title('optimised depth')
-        ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(model_depth_img - depth_img, vmin=-30, vmax=30, cmap='seismic')
-        plt.title('optimised - integrated depth')
-        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-        plt.imshow(model_depth_confidence, vmin=0, vmax=1)
-        plt.title('optimised depth confidence')
-        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-        plt.imshow(color_img / 255)
-        plt.title('integrated colour image')
-        plt.tight_layout()
-        stash_fig_page()
+        if ipython_env:
+            plt.figure('Optimised integrated weighted depth', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'frame idx: {ref_frame_idx}')
+            ax = plt.subplot(2, 3, 1)
+            plt.imshow(depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
+            plt.title('integrated depth')
+            ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+            plt.imshow(model_depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
+            plt.title('optimised depth')
+            ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+            ax.set_facecolor('grey')
+            plt.imshow(model_depth_img - depth_img, vmin=-30, vmax=30, cmap='seismic')
+            plt.title('optimised - integrated depth')
+            ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+            plt.imshow(model_depth_confidence, vmin=0, vmax=1)
+            plt.title('optimised depth confidence')
+            ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+            plt.imshow(color_img / 255)
+            plt.title('integrated colour image')
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
@@ -1278,113 +1288,115 @@ if __name__ == '__main__':
         masked_model_depth_img[~model_depth_mask] = np.nan
         masked_model_depth_images.append(masked_model_depth_img)
 
-        plt.figure('Optimised integrated weighted masked depth', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle(f'frame idx: {ref_frame_idx}')
-        ax = plt.subplot(2, 2, 1)
-        plt.imshow(model_depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
-        plt.title('optimised depth')
-        ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
-        plt.imshow(model_depth_confidence, vmin=0, vmax=1)
-        plt.title('optimised depth confidence')
-        ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
-        plt.imshow(model_depth_mask)
-        plt.title('depth mask')
-        ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
-        plt.imshow(masked_model_depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
-        plt.title('masked optimised depth')
-        plt.tight_layout()
-        stash_fig_page()
+        if ipython_env:
+            plt.figure('Optimised integrated weighted masked depth', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'frame idx: {ref_frame_idx}')
+            ax = plt.subplot(2, 2, 1)
+            plt.imshow(model_depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
+            plt.title('optimised depth')
+            ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
+            plt.imshow(model_depth_confidence, vmin=0, vmax=1)
+            plt.title('optimised depth confidence')
+            ax = plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+            plt.imshow(model_depth_mask)
+            plt.title('depth mask')
+            ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
+            plt.imshow(masked_model_depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30)
+            plt.title('masked optimised depth')
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
+    if ipython_env:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=1024, height=768, left=200, top=200)
 
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
+        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                         [1, 0, 0],
+                                                                         [0, 1, 0],
+                                                                         [0, 0, 1]]),
+                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+        axes_geometry.scale(20, [0, 0, 0])
+        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0, 0, 0])
+        ctr.set_up([0, -1, 0])
+        # vector from the lookat point to the camera
+        # make gaze from the camera to lookat point left-ward and down-ward
+        ctr.set_front([0.5, -0.5, -0.5])
+        ctr.set_zoom(1.0)
+        ctr.set_constant_z_far(200.0)
 
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = False
-        geometries = []
-        for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
-            # The extrinsic matrix transforms from world coordinates to camera coordinates
-            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                            intrinsic=camera_intrinsic,
-                                                                            extrinsic=camera_extrinsic)
-            camera_lines.paint_uniform_color([0, 0.5, 1])
-            if prev_camera_extrinsic is not None:
-                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
-                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                            [1, 0, 0.5]]))
-            vis.add_geometry(camera_lines, reset_bounding_box=False)
-            geometries.append(camera_lines)
+        view_status = vis.get_view_status()
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
+        while True:
+            close_vis = False
+            geometries = []
+            for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
+                # The extrinsic matrix transforms from world coordinates to camera coordinates
+                camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                                intrinsic=camera_intrinsic,
+                                                                                extrinsic=camera_extrinsic)
+                camera_lines.paint_uniform_color([0, 0.5, 1])
+                if prev_camera_extrinsic is not None:
+                    camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                                np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                                np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                    camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                               [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                    camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                                [1, 0, 0.5]]))
+                vis.add_geometry(camera_lines, reset_bounding_box=False)
+                geometries.append(camera_lines)
 
-            synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[rgbd_frame_idx]
+                synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[rgbd_frame_idx]
 
-            model_depth_img = masked_model_depth_images[rgbd_frame_idx]
+                model_depth_img = masked_model_depth_images[rgbd_frame_idx]
 
-            # Depth values larger than depth_trunc are truncated to 0
-            rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(np.nan_to_num(color_img, nan=127).astype(np.uint8)),
-                                                                            o3d.geometry.Image(model_depth_img),
-                                                                            depth_scale=1.0, depth_trunc=np.inf,
-                                                                            convert_rgb_to_intensity=False)
+                # Depth values larger than depth_trunc are truncated to 0
+                rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(o3d.geometry.Image(np.nan_to_num(color_img, nan=127).astype(np.uint8)),
+                                                                                o3d.geometry.Image(model_depth_img),
+                                                                                depth_scale=1.0, depth_trunc=np.inf,
+                                                                                convert_rgb_to_intensity=False)
 
-            rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
-                                                                      o3d.camera.PinholeCameraIntrinsic(np.array(rgbd_image.depth).shape[1],
-                                                                                                        np.array(rgbd_image.depth).shape[0],
-                                                                                                        camera_intrinsic_stepped),
-                                                                      synthetic_camera_extrinsic)
+                rgbd_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd_image,
+                                                                          o3d.camera.PinholeCameraIntrinsic(np.array(rgbd_image.depth).shape[1],
+                                                                                                            np.array(rgbd_image.depth).shape[0],
+                                                                                                            camera_intrinsic_stepped),
+                                                                          synthetic_camera_extrinsic)
 
-            vis.add_geometry(rgbd_pcd, reset_bounding_box=False)
+                vis.add_geometry(rgbd_pcd, reset_bounding_box=False)
 
-            start_time = time.time()
-            while True:
-                close_vis = not vis.poll_events()
-                vis.update_renderer()
-                new_view_status = vis.get_view_status()
-                if new_view_status != view_status:
-                    view_status = new_view_status
-                    view_status_time = time.time()
-                elif time.time() > view_status_time + visualisation_idle_timeout:
-                    close_vis = True
-                if close_vis or time.time() > start_time + 0.05:
+                start_time = time.monotonic()
+                while True:
+                    close_vis = not vis.poll_events()
+                    vis.update_renderer()
+                    new_view_status = vis.get_view_status()
+                    if new_view_status != view_status:
+                        view_status = new_view_status
+                        view_status_time = time.monotonic()
+                    elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                        close_vis = True
+                    if close_vis or time.monotonic() > start_time + 0.05:
+                        break
+
+                vis.remove_geometry(rgbd_pcd, reset_bounding_box=False)
+
+                if close_vis:
                     break
-
-            vis.remove_geometry(rgbd_pcd, reset_bounding_box=False)
 
             if close_vis:
                 break
 
-        if close_vis:
-            break
+            for geometry in geometries:
+                vis.remove_geometry(geometry, reset_bounding_box=False)
 
-        for geometry in geometries:
-            vis.remove_geometry(geometry, reset_bounding_box=False)
-
-    vis.destroy_window()
+        vis.destroy_window()
 
     # %%
 
@@ -1421,103 +1433,104 @@ if __name__ == '__main__':
 
     # %%
 
-    vertex_normal_lines = []
-    for mesh in integrated_weighted_canvas_meshes:
-        vertices = np.asarray(mesh.vertices)
-        normals = np.asarray(mesh.vertex_normals)
+    if ipython_env:
+        vertex_normal_lines = []
+        for mesh in integrated_weighted_canvas_meshes:
+            vertices = np.asarray(mesh.vertices)
+            normals = np.asarray(mesh.vertex_normals)
 
-        line_length = 1.0
-        points = np.vstack([vertices, vertices + line_length * normals])
-        lines = np.arange(points.shape[0]).reshape((2, -1)).T
-        colors = np.array([1, 0, 0]) * np.ones((lines.shape[0], 1))
+            line_length = 1.0
+            points = np.vstack([vertices, vertices + line_length * normals])
+            lines = np.arange(points.shape[0]).reshape((2, -1)).T
+            colors = np.array([1, 0, 0]) * np.ones((lines.shape[0], 1))
 
-        normal_lines = o3d.geometry.LineSet(
-            points=o3d.utility.Vector3dVector(points),
-            lines=o3d.utility.Vector2iVector(lines),
-        )
-        normal_lines.colors = o3d.utility.Vector3dVector(colors)
+            normal_lines = o3d.geometry.LineSet(
+                points=o3d.utility.Vector3dVector(points),
+                lines=o3d.utility.Vector2iVector(lines),
+            )
+            normal_lines.colors = o3d.utility.Vector3dVector(colors)
 
-        vertex_normal_lines.append(normal_lines)
+            vertex_normal_lines.append(normal_lines)
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=1024, height=768, left=200, top=200)
 
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
+        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                         [1, 0, 0],
+                                                                         [0, 1, 0],
+                                                                         [0, 0, 1]]),
+                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+        axes_geometry.scale(20, [0, 0, 0])
+        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0, 0, 0])
+        ctr.set_up([0, -1, 0])
+        # vector from the lookat point to the camera
+        # make gaze from the camera to lookat point left-ward and down-ward
+        ctr.set_front([0.5, -0.5, -0.5])
+        ctr.set_zoom(1.0)
+        ctr.set_constant_z_far(200.0)
 
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = False
-        geometries = []
-        for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
-            # The extrinsic matrix transforms from world coordinates to camera coordinates
-            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                            intrinsic=camera_intrinsic,
-                                                                            extrinsic=camera_extrinsic)
-            camera_lines.paint_uniform_color([0, 0.5, 1])
-            if prev_camera_extrinsic is not None:
-                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
-                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                            [1, 0, 0.5]]))
-            vis.add_geometry(camera_lines, reset_bounding_box=False)
-            geometries.append(camera_lines)
+        view_status = vis.get_view_status()
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
+        while True:
+            close_vis = False
+            geometries = []
+            for rgbd_frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
+                # The extrinsic matrix transforms from world coordinates to camera coordinates
+                camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                                intrinsic=camera_intrinsic,
+                                                                                extrinsic=camera_extrinsic)
+                camera_lines.paint_uniform_color([0, 0.5, 1])
+                if prev_camera_extrinsic is not None:
+                    camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                                np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                                np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                    camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                               [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                    camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                                [1, 0, 0.5]]))
+                vis.add_geometry(camera_lines, reset_bounding_box=False)
+                geometries.append(camera_lines)
 
-            synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[rgbd_frame_idx]
+                synthetic_camera_extrinsic, camera_intrinsic_stepped, depth_kernels, color_img, depth_img = integrated_weighted_depth_kernels[rgbd_frame_idx]
 
-            mesh = o3d.geometry.TriangleMesh(integrated_weighted_canvas_meshes[rgbd_frame_idx])
-            mesh.vertex_normals = o3d.utility.Vector3dVector()
-            normal_lines = vertex_normal_lines[rgbd_frame_idx]
+                mesh = o3d.geometry.TriangleMesh(integrated_weighted_canvas_meshes[rgbd_frame_idx])
+                mesh.vertex_normals = o3d.utility.Vector3dVector()
+                normal_lines = vertex_normal_lines[rgbd_frame_idx]
 
-            vis.add_geometry(mesh, reset_bounding_box=False)
-            vis.add_geometry(normal_lines, reset_bounding_box=False)
+                vis.add_geometry(mesh, reset_bounding_box=False)
+                vis.add_geometry(normal_lines, reset_bounding_box=False)
 
-            start_time = time.time()
-            while True:
-                close_vis = not vis.poll_events()
-                vis.update_renderer()
-                new_view_status = vis.get_view_status()
-                if new_view_status != view_status:
-                    view_status = new_view_status
-                    view_status_time = time.time()
-                elif time.time() > view_status_time + visualisation_idle_timeout:
-                    close_vis = True
-                if close_vis or time.time() > start_time + 0.05:
+                start_time = time.monotonic()
+                while True:
+                    close_vis = not vis.poll_events()
+                    vis.update_renderer()
+                    new_view_status = vis.get_view_status()
+                    if new_view_status != view_status:
+                        view_status = new_view_status
+                        view_status_time = time.monotonic()
+                    elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                        close_vis = True
+                    if close_vis or time.monotonic() > start_time + 0.05:
+                        break
+
+                vis.remove_geometry(mesh, reset_bounding_box=False)
+                vis.remove_geometry(normal_lines, reset_bounding_box=False)
+
+                if close_vis:
                     break
-
-            vis.remove_geometry(mesh, reset_bounding_box=False)
-            vis.remove_geometry(normal_lines, reset_bounding_box=False)
 
             if close_vis:
                 break
 
-        if close_vis:
-            break
+            for geometry in geometries:
+                vis.remove_geometry(geometry, reset_bounding_box=False)
 
-        for geometry in geometries:
-            vis.remove_geometry(geometry, reset_bounding_box=False)
-
-    vis.destroy_window()
+        vis.destroy_window()
 
     # %%
 

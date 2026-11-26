@@ -44,6 +44,7 @@ import psutil
 joblib.externals.loky.backend.context.physical_cores_cache = psutil.cpu_count(logical=False)
 
 import IPython
+ipython_env = IPython.get_ipython() is not None
 spyder_ide = IPython.get_ipython().__class__.__name__ == 'SpyderShell'
 
 import matplotlib
@@ -197,16 +198,16 @@ if __name__ == '__main__':
             vis.add_geometry(geometry, reset_bounding_box=False)
 
         view_status = vis.get_view_status()
-        view_status_time = time.time()
-        visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
         while True:
             close_vis = not vis.poll_events()
             vis.update_renderer()
             new_view_status = vis.get_view_status()
             if new_view_status != view_status:
                 view_status = new_view_status
-                view_status_time = time.time()
-            elif time.time() > view_status_time + visualisation_idle_timeout:
+                view_status_time = time.monotonic()
+            elif time.monotonic() > view_status_time + visualisation_idle_timeout:
                 close_vis = True
             if close_vis:
                 break
@@ -358,15 +359,16 @@ if __name__ == '__main__':
     symmetric_interframe_projection_errors[:, np.all(~np.isfinite(symmetric_interframe_projection_errors), axis=0)] = 0
     interframe_costs = 1 - cauchy(np.nanmean(symmetric_interframe_projection_errors, axis=0), 0.03)
 
-    plt.figure('Interframe costs', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(1, 2, 1)
-    plt.imshow(interframe_projection_errors)
-    plt.title('interframe_projection_errors')
-    plt.subplot(1, 2, 2, sharex=ax, sharey=ax)
-    plt.imshow(interframe_costs)
-    plt.title('interframe_costs')
-    plt.tight_layout()
+    if ipython_env:
+        plt.figure('Interframe costs', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(1, 2, 1)
+        plt.imshow(interframe_projection_errors)
+        plt.title('interframe_projection_errors')
+        plt.subplot(1, 2, 2, sharex=ax, sharey=ax)
+        plt.imshow(interframe_costs)
+        plt.title('interframe_costs')
+        plt.tight_layout()
 
     # %%
 
@@ -635,64 +637,65 @@ if __name__ == '__main__':
 
         model_mapping_scores_cmap = get_frame_idxs_cmap(frame_synth_projection_frame_idxs, N=projection_error_images.shape[0])
 
-        plt.figure('Interframe synthetic camera projection errors', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle(f'ref_frame_idx: {ref_frame_idx}')
-        ax = plt.subplot(2, 3, 1)
-        xys_extent = (-0.5, ws - 0.5, hs - 0.5, -0.5)
-        # Apply np.require() as a workaround for ValueError: arrays must be of dtype byte, short, float32 or float64
-        # https://github.com/matplotlib/matplotlib/issues/28448
-        plt.imshow(np.require(color_img, dtype=np.float32) / 255, extent=xys_extent)
-        plt.title('integrated colour image')
-        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-        plt.imshow(depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30, extent=xys_extent)
-        plt.title('integrated depth')
-        ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
-        plt.imshow(frame_synth_projection_score_image, cmap='jet', vmin=0, vmax=1)
-        plt.title('frame_synth_projection_score_image')
-        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-        plt.imshow(frame_synth_projection_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores_cmap.N-1,
-                   interpolation_stage='rgba')
-        plt.title('frame_synth_projection_frame_idxs')
-        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-        plt.scatter(projection_frame_v_interfaces[1, :] + 0.5, projection_frame_v_interfaces[0, :],
-                    s=1e3*v_interface_projection_errors)
-        plt.scatter(projection_frame_h_interfaces[1, :], projection_frame_h_interfaces[0, :] + 0.5,
-                    s=1e3*h_interface_projection_errors)
-        ax.set_aspect('equal')
-        plt.title('interface_projection_errors')
-        """
-        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
-        plt.imshow(depth_laplacian_img, cmap='jet', extent=xys_extent)
-        plt.title('depth_laplacian_img')
-        """
-        """
-        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
-        plt.imshow(depth_gradient_img, cmap='jet', extent=xys_extent)
-        plt.title('depth_gradient_img')
-        """
-        """
-        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
-        plt.scatter(projection_frame_v_interfaces[1, :] + 0.5, projection_frame_v_interfaces[0, :],
-                    s=100*v_interface_projection_costs)
-        plt.scatter(projection_frame_h_interfaces[1, :], projection_frame_h_interfaces[0, :] + 0.5,
-                    s=100*h_interface_projection_costs)
-        ax.set_aspect('equal')
-        plt.title('interface_projection_costs')
-        """
-        """
-        plt.subplot(2, 3, 6)
-        plt.bar(bin_edges[:-1], hist / np.sum(hist), width=np.diff(bin_edges), align='edge')
-        plt.ylim((0, 1))
-        plt.title('frame_synth_projection_score_image histogram')
-        """
-        """
-        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
-        plt.imshow(ref_xyzs_grid_surface_areas, cmap='jet')
-        plt.title('ref_xyzs_grid_surface_areas')
-        """
-        plt.tight_layout()
-        stash_fig_page()
+        if ipython_env:
+            plt.figure('Interframe synthetic camera projection errors', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'ref_frame_idx: {ref_frame_idx}')
+            ax = plt.subplot(2, 3, 1)
+            xys_extent = (-0.5, ws - 0.5, hs - 0.5, -0.5)
+            # Apply np.require() as a workaround for ValueError: arrays must be of dtype byte, short, float32 or float64
+            # https://github.com/matplotlib/matplotlib/issues/28448
+            plt.imshow(np.require(color_img, dtype=np.float32) / 255, extent=xys_extent)
+            plt.title('integrated colour image')
+            ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+            plt.imshow(depth_img, vmin=camera_pull_back_z, vmax=camera_pull_back_z+30, extent=xys_extent)
+            plt.title('integrated depth')
+            ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+            plt.imshow(frame_synth_projection_score_image, cmap='jet', vmin=0, vmax=1)
+            plt.title('frame_synth_projection_score_image')
+            ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+            plt.imshow(frame_synth_projection_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores_cmap.N-1,
+                       interpolation_stage='rgba')
+            plt.title('frame_synth_projection_frame_idxs')
+            ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+            plt.scatter(projection_frame_v_interfaces[1, :] + 0.5, projection_frame_v_interfaces[0, :],
+                        s=1e3*v_interface_projection_errors)
+            plt.scatter(projection_frame_h_interfaces[1, :], projection_frame_h_interfaces[0, :] + 0.5,
+                        s=1e3*h_interface_projection_errors)
+            ax.set_aspect('equal')
+            plt.title('interface_projection_errors')
+            """
+            ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+            plt.imshow(depth_laplacian_img, cmap='jet', extent=xys_extent)
+            plt.title('depth_laplacian_img')
+            """
+            """
+            ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+            plt.imshow(depth_gradient_img, cmap='jet', extent=xys_extent)
+            plt.title('depth_gradient_img')
+            """
+            """
+            ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+            plt.scatter(projection_frame_v_interfaces[1, :] + 0.5, projection_frame_v_interfaces[0, :],
+                        s=100*v_interface_projection_costs)
+            plt.scatter(projection_frame_h_interfaces[1, :], projection_frame_h_interfaces[0, :] + 0.5,
+                        s=100*h_interface_projection_costs)
+            ax.set_aspect('equal')
+            plt.title('interface_projection_costs')
+            """
+            """
+            plt.subplot(2, 3, 6)
+            plt.bar(bin_edges[:-1], hist / np.sum(hist), width=np.diff(bin_edges), align='edge')
+            plt.ylim((0, 1))
+            plt.title('frame_synth_projection_score_image histogram')
+            """
+            """
+            ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+            plt.imshow(ref_xyzs_grid_surface_areas, cmap='jet')
+            plt.title('ref_xyzs_grid_surface_areas')
+            """
+            plt.tight_layout()
+            stash_fig_page()
 
     # Weighting for the projection errors based on the IOU of projected canvas regions
     interframe_canvas_projection_error_weights = np.power(interframe_canvas_projection_ious, 2)
@@ -1231,41 +1234,42 @@ if __name__ == '__main__':
     with torch.no_grad():
         frame_synth_projection_scores = torch.nn.functional.sigmoid(4 * (model_frame_synth_projection_scores - 0.5)).numpy(force=True)
 
-    plt.figure('Interframe canvas projection errors', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(2, 3, 1)
-    plt.imshow(interframe_canvas_projection_errors)
-    plt.title('interframe_canvas_projection_errors')
-    ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-    plt.imshow(interframe_angles)
-    plt.title('interframe_angles')
-    ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
-    plt.imshow(interframe_canvas_projection_error_weights)
-    plt.title('interframe_canvas_projection_error_weights')
-    ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-    plt.imshow(interframe_support)
-    plt.title('interframe_support')
-    """
-    ax = plt.subplot(2, 3, 3)
-    plt.plot(frame_synth_projection_scores)
-    plt.title('frame_synth_projection_scores')
-    plt.subplot(2, 3, 4, sharex=ax)
-    plt.plot(frame_synth_projection_scores)
-    plt.ylim((-0.05, 1.05))
-    plt.title('frame_synth_projection_scores')
-    """
-    ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-    vmaxabs = np.max(np.abs(interframe_synth_projection_relative_scores))
-    plt.imshow(interframe_synth_projection_relative_scores, cmap='seismic', vmin=-vmaxabs, vmax=vmaxabs)
-    plt.title('interframe_synth_projection_relative_scores')
-    plt.subplot(2, 3, 6)
-    plt.plot(frame_synth_projection_scores, label='frame synth projection scores')
-    plt.plot(frame_synth_projection_score_image_means, ':', label='frame synth projection score image means')
-    plt.plot(np.sum(interframe_synth_projection_relative_scores * interframe_support, axis=0) / np.sum(interframe_support, axis=0), '-.',
-             label='interframe support weighted mean of relative scores')
-    plt.legend()
-    plt.title('frame_synth_projection_scores')
-    plt.tight_layout()
+    if ipython_env:
+        plt.figure('Interframe canvas projection errors', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(2, 3, 1)
+        plt.imshow(interframe_canvas_projection_errors)
+        plt.title('interframe_canvas_projection_errors')
+        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+        plt.imshow(interframe_angles)
+        plt.title('interframe_angles')
+        ax = plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+        plt.imshow(interframe_canvas_projection_error_weights)
+        plt.title('interframe_canvas_projection_error_weights')
+        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+        plt.imshow(interframe_support)
+        plt.title('interframe_support')
+        """
+        ax = plt.subplot(2, 3, 3)
+        plt.plot(frame_synth_projection_scores)
+        plt.title('frame_synth_projection_scores')
+        plt.subplot(2, 3, 4, sharex=ax)
+        plt.plot(frame_synth_projection_scores)
+        plt.ylim((-0.05, 1.05))
+        plt.title('frame_synth_projection_scores')
+        """
+        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+        vmaxabs = np.max(np.abs(interframe_synth_projection_relative_scores))
+        plt.imshow(interframe_synth_projection_relative_scores, cmap='seismic', vmin=-vmaxabs, vmax=vmaxabs)
+        plt.title('interframe_synth_projection_relative_scores')
+        plt.subplot(2, 3, 6)
+        plt.plot(frame_synth_projection_scores, label='frame synth projection scores')
+        plt.plot(frame_synth_projection_score_image_means, ':', label='frame synth projection score image means')
+        plt.plot(np.sum(interframe_synth_projection_relative_scores * interframe_support, axis=0) / np.sum(interframe_support, axis=0), '-.',
+                 label='interframe support weighted mean of relative scores')
+        plt.legend()
+        plt.title('frame_synth_projection_scores')
+        plt.tight_layout()
 
     # %%
 
@@ -1363,27 +1367,28 @@ if __name__ == '__main__':
 
     target_frame_support_cluster_labels = target_frame_idxs[np.argmax(interframe_support[target_frame_idxs, :], axis=0)]
 
-    plt.figure('Target frame selection', figsize=(16, 10))
-    plt.clf()
-    ax = plt.subplot(2, 2, 1)
-    plt.plot(target_frame_activations)
-    plt.title('target_frame_activations')
-    plt.subplot(2, 2, 2, sharex=ax)
-    for target_frame_idx in target_frame_idxs:
-        plt.plot(interframe_support[target_frame_idx, :], label=target_frame_idx)
-    plt.ylim((-0.05, 1.05))
-    plt.legend()
-    plt.title('interframe_support[target_frame_idxs]')
-    plt.subplot(2, 2, 3, sharex=ax)
-    plt.plot(frame_synth_projection_scores)
-    plt.plot(target_frame_idxs, frame_synth_projection_scores[target_frame_idxs], 'o')
-    plt.ylim((-0.05, 1.05))
-    plt.title('frame_synth_projection_scores')
-    plt.subplot(2, 2, 4, sharex=ax)
-    plt.plot(loss_components['exclusion'].numpy(force=True))
-    plt.ylim((-0.05, 1.05))
-    plt.title('frame exclusion loss')
-    plt.tight_layout()
+    if ipython_env:
+        plt.figure('Target frame selection', figsize=(16, 10))
+        plt.clf()
+        ax = plt.subplot(2, 2, 1)
+        plt.plot(target_frame_activations)
+        plt.title('target_frame_activations')
+        plt.subplot(2, 2, 2, sharex=ax)
+        for target_frame_idx in target_frame_idxs:
+            plt.plot(interframe_support[target_frame_idx, :], label=target_frame_idx)
+        plt.ylim((-0.05, 1.05))
+        plt.legend()
+        plt.title('interframe_support[target_frame_idxs]')
+        plt.subplot(2, 2, 3, sharex=ax)
+        plt.plot(frame_synth_projection_scores)
+        plt.plot(target_frame_idxs, frame_synth_projection_scores[target_frame_idxs], 'o')
+        plt.ylim((-0.05, 1.05))
+        plt.title('frame_synth_projection_scores')
+        plt.subplot(2, 2, 4, sharex=ax)
+        plt.plot(loss_components['exclusion'].numpy(force=True))
+        plt.ylim((-0.05, 1.05))
+        plt.title('frame exclusion loss')
+        plt.tight_layout()
 
     # %%
 
@@ -1439,86 +1444,87 @@ if __name__ == '__main__':
         print('GMM n_components, stress, n_iter, gm_component_intersection',
               n_components, stress, n_iter, gm_component_intersection)
 
-        colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
-        marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
-        if n_components == 2:
-            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'n_components: {n_components}')
-            ax = plt.subplot(1, 1, 1)
-            plt.plot(*embedding.T, alpha=0.5)
-            marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
-            for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
-                cluster_mask = target_frame_support_cluster_labels[embedding_frame_idxs] == target_frame_idx
-                plt.scatter(*embedding[cluster_mask, :].T,
-                            s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5, label=target_frame_idx)
-                plt.scatter(*embedding[embedding_frame_idxs == target_frame_idx, :].T, s=4000,
-                            edgecolor=colour, facecolor='none', marker=marker, alpha=0.5)
-            for frame_idx, xy in zip(embedding_frame_idxs, embedding):
-                plt.text(*xy, f'{frame_idx}')
-            ax.set_aspect('equal', adjustable='datalim')
-            plt.legend()
-            plt.tight_layout()
-            stash_fig_page()
-        elif n_components >= 3:
-            if n_components > 3:
-                mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
-                mds.fit(embedding)
-                embedding_3d = mds.embedding_
-            else:
-                embedding_3d = embedding
-            plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
-            setup_new_fig_page()
-            plt.suptitle(f'n_components: {n_components}')
-            ax3 = plt.subplot(1, 1, 1, projection='3d')
-            ax3.plot(*embedding_3d.T, alpha=0.5)
-            marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
-            for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
-                cluster_mask = target_frame_support_cluster_labels[embedding_frame_idxs] == target_frame_idx
-                ax3.scatter(*embedding_3d[cluster_mask, :].T,
-                            s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5, label=target_frame_idx)
-                ax3.scatter(*embedding_3d[embedding_frame_idxs == target_frame_idx, :].T, s=4000,
-                            edgecolor=colour, facecolor='none', marker=marker, alpha=0.5)
-            for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
-                ax3.text(*xyz, f'{frame_idx}')
-            ax3.set_aspect('equal', adjustable='datalim')
-            ax3.set_xlabel('X')
-            ax3.set_ylabel('Y')
-            ax3.set_zlabel('Z')
-            plt.legend()
-            plt.tight_layout()
-            stash_fig_page()
+        if ipython_env:
+            colour_sequence = itertools.cycle(matplotlib.color_sequences['tab10'])
+            marker_sequence = itertools.cycle([marker for marker in matplotlib.lines.Line2D.filled_markers if marker not in ['.']])
+            if n_components == 2:
+                plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'n_components: {n_components}')
+                ax = plt.subplot(1, 1, 1)
+                plt.plot(*embedding.T, alpha=0.5)
+                marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
+                for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
+                    cluster_mask = target_frame_support_cluster_labels[embedding_frame_idxs] == target_frame_idx
+                    plt.scatter(*embedding[cluster_mask, :].T,
+                                s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5, label=target_frame_idx)
+                    plt.scatter(*embedding[embedding_frame_idxs == target_frame_idx, :].T, s=4000,
+                                edgecolor=colour, facecolor='none', marker=marker, alpha=0.5)
+                for frame_idx, xy in zip(embedding_frame_idxs, embedding):
+                    plt.text(*xy, f'{frame_idx}')
+                ax.set_aspect('equal', adjustable='datalim')
+                plt.legend()
+                plt.tight_layout()
+                stash_fig_page()
+            elif n_components >= 3:
+                if n_components > 3:
+                    mds = sklearn.manifold.MDS(n_components=3, metric=True, random_state=0)
+                    mds.fit(embedding)
+                    embedding_3d = mds.embedding_
+                else:
+                    embedding_3d = embedding
+                plt.figure('Interframe dissimilarity embedding', figsize=(16, 10))
+                setup_new_fig_page()
+                plt.suptitle(f'n_components: {n_components}')
+                ax3 = plt.subplot(1, 1, 1, projection='3d')
+                ax3.plot(*embedding_3d.T, alpha=0.5)
+                marker_sizes = np.maximum(frame_synth_projection_scores[embedding_frame_idxs], 0) * 180 + 20
+                for target_frame_idx, colour, marker in zip(target_frame_idxs, colour_sequence, marker_sequence):
+                    cluster_mask = target_frame_support_cluster_labels[embedding_frame_idxs] == target_frame_idx
+                    ax3.scatter(*embedding_3d[cluster_mask, :].T,
+                                s=marker_sizes[cluster_mask], color=colour, marker=marker, alpha=0.5, label=target_frame_idx)
+                    ax3.scatter(*embedding_3d[embedding_frame_idxs == target_frame_idx, :].T, s=4000,
+                                edgecolor=colour, facecolor='none', marker=marker, alpha=0.5)
+                for frame_idx, xyz in zip(embedding_frame_idxs, embedding_3d):
+                    ax3.text(*xyz, f'{frame_idx}')
+                ax3.set_aspect('equal', adjustable='datalim')
+                ax3.set_xlabel('X')
+                ax3.set_ylabel('Y')
+                ax3.set_zlabel('Z')
+                plt.legend()
+                plt.tight_layout()
+                stash_fig_page()
 
-        plt.figure('Embedding costs', figsize=(16, 10))
-        setup_new_fig_page()
-        plt.suptitle(f'n_components: {n_components}')
-        ax = plt.subplot(2, 3, 1)
-        plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
-        plt.title('interframe_dissimilarities')
-        ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-        plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
-        plt.title('interframe_dissimilarity_weights')
-        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-        plt.imshow(embedding_costs, cmap='jet', interpolation='none')
-        plt.title('embedding_costs')
-        ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-        plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
-        plt.title('embedding_costs / interframe_dissimilarities')
-        plt.subplot(2, 3, 6)
-        bins = np.linspace(0, 1, 51)
-        plt.hist(embedding_cost_values, bins=bins, density=True)
-        for component_idx in np.argsort(gm.means_[:, 0]):
-            plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
-                                                                             scale=np.sqrt(gm.covariances_[component_idx, 0])))
-        plt.axvline(gm_component_intersection, color='blue', linestyle='--')
-        plt.plot(gm_component_intersection,
-                 gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
-                                                                       loc=gm.means_[component_idxs[0], 0],
-                                                                       scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
-                 'bo')
-        plt.title('embedding_cost_values')
-        plt.tight_layout()
-        stash_fig_page()
+            plt.figure('Embedding costs', figsize=(16, 10))
+            setup_new_fig_page()
+            plt.suptitle(f'n_components: {n_components}')
+            ax = plt.subplot(2, 3, 1)
+            plt.imshow(interframe_dissimilarities, cmap='jet', interpolation='none')
+            plt.title('interframe_dissimilarities')
+            ax = plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+            plt.imshow(interframe_dissimilarity_weights, cmap='jet', interpolation='none')
+            plt.title('interframe_dissimilarity_weights')
+            ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+            plt.imshow(embedding_costs, cmap='jet', interpolation='none')
+            plt.title('embedding_costs')
+            ax = plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+            plt.imshow(embedding_costs / np.maximum(interframe_dissimilarities, 1e-8), vmin=0.2, vmax=5, cmap='jet', interpolation='none')
+            plt.title('embedding_costs / interframe_dissimilarities')
+            plt.subplot(2, 3, 6)
+            bins = np.linspace(0, 1, 51)
+            plt.hist(embedding_cost_values, bins=bins, density=True)
+            for component_idx in np.argsort(gm.means_[:, 0]):
+                plt.plot(bins, gm.weights_[component_idx] * scipy.stats.norm.pdf(bins, loc=gm.means_[component_idx, 0],
+                                                                                 scale=np.sqrt(gm.covariances_[component_idx, 0])))
+            plt.axvline(gm_component_intersection, color='blue', linestyle='--')
+            plt.plot(gm_component_intersection,
+                     gm.weights_[component_idxs[0]] * scipy.stats.norm.pdf(gm_component_intersection,
+                                                                           loc=gm.means_[component_idxs[0], 0],
+                                                                           scale=np.sqrt(gm.covariances_[component_idxs[0], 0])),
+                     'bo')
+            plt.title('embedding_cost_values')
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
@@ -1769,97 +1775,98 @@ if __name__ == '__main__':
 
     # %%
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1024, height=768, left=200, top=200)
+    if ipython_env:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(width=1024, height=768, left=200, top=200)
 
-    axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
-                                                                     [1, 0, 0],
-                                                                     [0, 1, 0],
-                                                                     [0, 0, 1]]),
-                                         o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
-    axes_geometry.scale(20, [0, 0, 0])
-    axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    vis.add_geometry(axes_geometry, reset_bounding_box=True)
+        axes_geometry = o3d.geometry.LineSet(o3d.utility.Vector3dVector([[0, 0, 0],
+                                                                         [1, 0, 0],
+                                                                         [0, 1, 0],
+                                                                         [0, 0, 1]]),
+                                             o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]]))
+        axes_geometry.scale(20, [0, 0, 0])
+        axes_geometry.colors = o3d.utility.Vector3dVector([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        vis.add_geometry(axes_geometry, reset_bounding_box=True)
 
-    ctr = vis.get_view_control()
-    ctr.set_lookat([0, 0, 0])
-    ctr.set_up([0, -1, 0])
-    # vector from the lookat point to the camera
-    # make gaze from the camera to lookat point left-ward and down-ward
-    ctr.set_front([0.5, -0.5, -0.5])
-    ctr.set_zoom(1.0)
-    ctr.set_constant_z_far(200.0)
+        ctr = vis.get_view_control()
+        ctr.set_lookat([0, 0, 0])
+        ctr.set_up([0, -1, 0])
+        # vector from the lookat point to the camera
+        # make gaze from the camera to lookat point left-ward and down-ward
+        ctr.set_front([0.5, -0.5, -0.5])
+        ctr.set_zoom(1.0)
+        ctr.set_constant_z_far(200.0)
 
-    colour_sequence = matplotlib.color_sequences['tab10']
-    colour_sequence = colour_sequence * int(np.ceil(len(target_frame_idxs) / len(colour_sequence)))
-    for frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
-        # The extrinsic matrix transforms from world coordinates to camera coordinates
-        camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
-                                                                        intrinsic=camera_intrinsic,
-                                                                        extrinsic=camera_extrinsic)
-        if frame_idx in embedding_frame_idxs:
-            weights = 1 / np.maximum(interframe_dissimilarities[frame_idx, target_frame_idxs], 1e-8)
-            colour = np.clip(np.sum(weights[:, None] * np.array(colour_sequence[:len(weights)]), axis=0) / np.sum(weights), 0, 1)
-        else:
-            colour = [0, 0, 0]
-        camera_lines.paint_uniform_color(colour)
-        if prev_camera_extrinsic is not None:
-            camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
-                                                                        np.linalg.inv(prev_camera_extrinsic)[:3, 3],
-                                                                        np.linalg.inv(camera_extrinsic)[:3, 3]]))
-            camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
-                                                                       [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
-            camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
-                                                                        [1, 0, 0.5]]))
-        vis.add_geometry(camera_lines, reset_bounding_box=False)
+        colour_sequence = matplotlib.color_sequences['tab10']
+        colour_sequence = colour_sequence * int(np.ceil(len(target_frame_idxs) / len(colour_sequence)))
+        for frame_idx, (prev_camera_extrinsic, camera_extrinsic) in enumerate(zip([None] + camera_extrinsics[:-1], camera_extrinsics)):
+            # The extrinsic matrix transforms from world coordinates to camera coordinates
+            camera_lines = o3d.geometry.LineSet.create_camera_visualization(view_width_px=image_size[0], view_height_px=image_size[1],
+                                                                            intrinsic=camera_intrinsic,
+                                                                            extrinsic=camera_extrinsic)
+            if frame_idx in embedding_frame_idxs:
+                weights = 1 / np.maximum(interframe_dissimilarities[frame_idx, target_frame_idxs], 1e-8)
+                colour = np.clip(np.sum(weights[:, None] * np.array(colour_sequence[:len(weights)]), axis=0) / np.sum(weights), 0, 1)
+            else:
+                colour = [0, 0, 0]
+            camera_lines.paint_uniform_color(colour)
+            if prev_camera_extrinsic is not None:
+                camera_lines.points = o3d.utility.Vector3dVector(np.vstack([camera_lines.points,
+                                                                            np.linalg.inv(prev_camera_extrinsic)[:3, 3],
+                                                                            np.linalg.inv(camera_extrinsic)[:3, 3]]))
+                camera_lines.lines = o3d.utility.Vector2iVector(np.vstack([camera_lines.lines,
+                                                                           [len(camera_lines.points) - 2, len(camera_lines.points) - 1]]))
+                camera_lines.colors = o3d.utility.Vector3dVector(np.vstack([camera_lines.colors,
+                                                                            [1, 0, 0.5]]))
+            vis.add_geometry(camera_lines, reset_bounding_box=False)
 
-    view_status = vis.get_view_status()
-    view_status_time = time.time()
-    visualisation_idle_timeout = 60 if IPython.get_ipython() is not None else 10
-    while True:
-        close_vis = False
-        for target_frame_idx in target_frame_idxs:
-            mesh = o3d.geometry.TriangleMesh(integrated_weighted_canvas_meshes[target_frame_idx])
-            mesh.vertex_normals = o3d.utility.Vector3dVector()
-            geometries = [mesh]
+        view_status = vis.get_view_status()
+        view_status_time = time.monotonic()
+        visualisation_idle_timeout = 60
+        while True:
+            close_vis = False
+            for target_frame_idx in target_frame_idxs:
+                mesh = o3d.geometry.TriangleMesh(integrated_weighted_canvas_meshes[target_frame_idx])
+                mesh.vertex_normals = o3d.utility.Vector3dVector()
+                geometries = [mesh]
 
-            for frame_idx, colour in zip(target_frame_idxs, colour_sequence[:len(target_frame_idxs)]):
-                sphere_radius = 0.6 if frame_idx == target_frame_idx else 0.3
-                sphere_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=sphere_radius)
-                sphere_mesh.translate(np.linalg.inv(camera_extrinsics[frame_idx])[:3, 3], relative=False)
-                sphere_mesh.paint_uniform_color(colour)
-                geometries.append(sphere_mesh)
+                for frame_idx, colour in zip(target_frame_idxs, colour_sequence[:len(target_frame_idxs)]):
+                    sphere_radius = 0.6 if frame_idx == target_frame_idx else 0.3
+                    sphere_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=sphere_radius)
+                    sphere_mesh.translate(np.linalg.inv(camera_extrinsics[frame_idx])[:3, 3], relative=False)
+                    sphere_mesh.paint_uniform_color(colour)
+                    geometries.append(sphere_mesh)
 
-            geometries = [geometry.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
-                          if isinstance(geometry, (o3d.geometry.PointCloud, o3d.geometry.TriangleMesh)) else geometry
-                          for geometry in geometries]
+                geometries = [geometry.crop(o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 100]))
+                              if isinstance(geometry, (o3d.geometry.PointCloud, o3d.geometry.TriangleMesh)) else geometry
+                              for geometry in geometries]
 
-            for geometry in geometries:
-                vis.add_geometry(geometry, reset_bounding_box=False)
+                for geometry in geometries:
+                    vis.add_geometry(geometry, reset_bounding_box=False)
 
-            start_time = time.time()
-            while True:
-                close_vis = not vis.poll_events()
-                vis.update_renderer()
-                new_view_status = vis.get_view_status()
-                if new_view_status != view_status:
-                    view_status = new_view_status
-                    view_status_time = time.time()
-                elif time.time() > view_status_time + visualisation_idle_timeout:
-                    close_vis = True
-                if close_vis or time.time() > start_time + 1.0:
+                start_time = time.monotonic()
+                while True:
+                    close_vis = not vis.poll_events()
+                    vis.update_renderer()
+                    new_view_status = vis.get_view_status()
+                    if new_view_status != view_status:
+                        view_status = new_view_status
+                        view_status_time = time.monotonic()
+                    elif time.monotonic() > view_status_time + visualisation_idle_timeout:
+                        close_vis = True
+                    if close_vis or time.monotonic() > start_time + 1.0:
+                        break
+
+                for geometry in geometries:
+                    vis.remove_geometry(geometry, reset_bounding_box=False)
+
+                if close_vis:
                     break
-
-            for geometry in geometries:
-                vis.remove_geometry(geometry, reset_bounding_box=False)
 
             if close_vis:
                 break
 
-        if close_vis:
-            break
-
-    vis.destroy_window()
+        vis.destroy_window()
 
     # %%
 
@@ -1959,41 +1966,42 @@ if __name__ == '__main__':
 
             mapping_scores[secondary_frame_idx, :, :] = mapping_score
 
-            sec_img = frame_images[secondary_frame_idx]
-            _, _, _, color_img, _ = integrated_weighted_depth_kernels[primary_frame_idx]
+            if ipython_env:
+                sec_img = frame_images[secondary_frame_idx]
+                _, _, _, color_img, _ = integrated_weighted_depth_kernels[primary_frame_idx]
 
-            plt.figure('Synthetic frame scores', figsize=(24, 12))
-            setup_new_fig_page()
-            plt.suptitle(f'primary, secondary frame idxs: {primary_frame_idx}, {secondary_frame_idx}')
-            plt.subplot(3, 3, 1)
-            plt.imshow(img)
-            plt.subplot(3, 3, 2)
-            plt.imshow(sec_img)
-            inlier_mask = ((primary_mesh_projected_points[0, :] > -0.5) & (primary_mesh_projected_points[0, :] < sec_img.shape[1] - 0.5)
-                           & (primary_mesh_projected_points[1, :] > -0.5) & (primary_mesh_projected_points[1, :] < sec_img.shape[0] - 0.5))
-            plt.scatter(*primary_mesh_projected_points[:, inlier_mask], s=1, c='b', alpha=0.9)
-            ax = plt.subplot(3, 3, 4)
-            # Apply np.require() as a workaround for ValueError: arrays must be of dtype byte, short, float32 or float64
-            # https://github.com/matplotlib/matplotlib/issues/28448
-            plt.imshow(np.require(color_img, dtype=np.float32) / 255, extent=xys_extent)
-            plt.title('integrated colour image')
-            plt.subplot(3, 3, 5, sharex=ax, sharey=ax)
-            plt.imshow(mapping_score, vmin=0, vmax=1, extent=xys_extent)
-            plt.title('mapping_score')
-            plt.subplot(3, 3, 6, sharex=ax, sharey=ax)
-            plt.imshow(flow_discrepancy_score, vmin=0, vmax=1, extent=xys_extent)
-            plt.title('flow_discrepancy_score')
-            plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
-            plt.imshow(flow_grid_scaling_aspect_score, vmin=0, vmax=1, extent=xys_extent)
-            plt.title('flow_grid_scaling_aspect_score')
-            plt.subplot(3, 3, 8, sharex=ax, sharey=ax)
-            plt.imshow(flow_grid_orthogonality_score, vmin=0, vmax=1, extent=xys_extent)
-            plt.title('flow_grid_orthogonality_score')
-            plt.subplot(3, 3, 9, sharex=ax, sharey=ax)
-            plt.imshow(flow_laplacian_score, vmin=0, vmax=1, extent=xys_extent)
-            plt.title('flow_laplacian_score')
-            plt.tight_layout()
-            stash_fig_page()
+                plt.figure('Synthetic frame scores', figsize=(24, 12))
+                setup_new_fig_page()
+                plt.suptitle(f'primary, secondary frame idxs: {primary_frame_idx}, {secondary_frame_idx}')
+                plt.subplot(3, 3, 1)
+                plt.imshow(img)
+                plt.subplot(3, 3, 2)
+                plt.imshow(sec_img)
+                inlier_mask = ((primary_mesh_projected_points[0, :] > -0.5) & (primary_mesh_projected_points[0, :] < sec_img.shape[1] - 0.5)
+                               & (primary_mesh_projected_points[1, :] > -0.5) & (primary_mesh_projected_points[1, :] < sec_img.shape[0] - 0.5))
+                plt.scatter(*primary_mesh_projected_points[:, inlier_mask], s=1, c='b', alpha=0.9)
+                ax = plt.subplot(3, 3, 4)
+                # Apply np.require() as a workaround for ValueError: arrays must be of dtype byte, short, float32 or float64
+                # https://github.com/matplotlib/matplotlib/issues/28448
+                plt.imshow(np.require(color_img, dtype=np.float32) / 255, extent=xys_extent)
+                plt.title('integrated colour image')
+                plt.subplot(3, 3, 5, sharex=ax, sharey=ax)
+                plt.imshow(mapping_score, vmin=0, vmax=1, extent=xys_extent)
+                plt.title('mapping_score')
+                plt.subplot(3, 3, 6, sharex=ax, sharey=ax)
+                plt.imshow(flow_discrepancy_score, vmin=0, vmax=1, extent=xys_extent)
+                plt.title('flow_discrepancy_score')
+                plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
+                plt.imshow(flow_grid_scaling_aspect_score, vmin=0, vmax=1, extent=xys_extent)
+                plt.title('flow_grid_scaling_aspect_score')
+                plt.subplot(3, 3, 8, sharex=ax, sharey=ax)
+                plt.imshow(flow_grid_orthogonality_score, vmin=0, vmax=1, extent=xys_extent)
+                plt.title('flow_grid_orthogonality_score')
+                plt.subplot(3, 3, 9, sharex=ax, sharey=ax)
+                plt.imshow(flow_laplacian_score, vmin=0, vmax=1, extent=xys_extent)
+                plt.title('flow_laplacian_score')
+                plt.tight_layout()
+                stash_fig_page()
 
 
         # Generate the synthetic view using the frame mapping scores
@@ -2074,22 +2082,23 @@ if __name__ == '__main__':
                                                                synthetic_camera_extrinsic, synthetic_camera_intrinsic,
                                                                mapping_scores, xyzfg, xfg, yfg)
 
-        plt.figure('Synthetic view', figsize=(24, 12))
-        setup_new_fig_page()
-        plt.suptitle(f'primary frame idx: {primary_frame_idx}')
-        ax = plt.subplot(2, 2, 1)
-        synthetic_frame_cmap = get_frame_idxs_cmap(synthetic_frame_idxs, N=mapping_scores.shape[0])
-        plt.imshow(synthetic_frame_idxs, cmap=synthetic_frame_cmap, vmin=0, vmax=synthetic_frame_cmap.N-1, interpolation_stage='rgba')
-        ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(synthetic_frame_img / 255)
-        plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
-        plt.imshow(up_max_mapping_scores, vmin=0, vmax=1)
-        ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(filtered_synthetic_frame_img / 255)
-        plt.tight_layout()
-        stash_fig_page()
+        if ipython_env:
+            plt.figure('Synthetic view', figsize=(24, 12))
+            setup_new_fig_page()
+            plt.suptitle(f'primary frame idx: {primary_frame_idx}')
+            ax = plt.subplot(2, 2, 1)
+            synthetic_frame_cmap = get_frame_idxs_cmap(synthetic_frame_idxs, N=mapping_scores.shape[0])
+            plt.imshow(synthetic_frame_idxs, cmap=synthetic_frame_cmap, vmin=0, vmax=synthetic_frame_cmap.N-1, interpolation_stage='rgba')
+            ax = plt.subplot(2, 2, 2, sharex=ax, sharey=ax)
+            ax.set_facecolor('grey')
+            plt.imshow(synthetic_frame_img / 255)
+            plt.subplot(2, 2, 3, sharex=ax, sharey=ax)
+            plt.imshow(up_max_mapping_scores, vmin=0, vmax=1)
+            ax = plt.subplot(2, 2, 4, sharex=ax, sharey=ax)
+            ax.set_facecolor('grey')
+            plt.imshow(filtered_synthetic_frame_img / 255)
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
@@ -2550,119 +2559,120 @@ if __name__ == '__main__':
                         pickle_file)
 
 
-        plt.figure('Loss components', figsize=(24, 12))
-        setup_new_fig_page()
-        loss = sum(np.mean(loss_component.numpy(force=True)) for loss_component in loss_components.values())
-        plt.suptitle(f'primary frame idx: {primary_frame_idx} {loss:.5f}')
-        ncols = 3
-        nrows = int(np.ceil((2 + len(loss_components)) / ncols))
-        ax = plt.subplot(nrows, ncols, 1)
-        plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1,
-                   extent=xys_extent, interpolation_stage='rgba')
-        ax = plt.subplot(nrows, ncols, 2, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(np.clip(filtered_up_model_synthetic_frame_img / 255, 0, 1))
-        for idx, (title, loss_component) in enumerate(loss_components.items()):
-            loss_component = loss_component.numpy(force=True)
-            if len(loss_component.shape) < 2:
-                plt.subplot(nrows, ncols, 3 + idx)
-                plt.plot(loss_component)
-            else:
-                plt.subplot(nrows, ncols, 3 + idx, sharex=ax, sharey=ax)
-                wp = (xys_extent[1] - xys_extent[0]) / model_frames_idxs.shape[1]
-                hp = (xys_extent[2] - xys_extent[3]) / model_frames_idxs.shape[0]
-                shape_diff = np.array(model_frames_idxs.shape[:2]) - np.array(loss_component.shape[:2])
-                sub_xys_extent = (xys_extent[0] + wp * shape_diff[1] / 2, xys_extent[1] - wp * shape_diff[1] / 2,
-                                  xys_extent[2] - hp * shape_diff[0] / 2, xys_extent[3] + hp * shape_diff[0] / 2)
-                plt.imshow(loss_component, extent=sub_xys_extent)
-            plt.title(f'{title} {np.mean(loss_component):.5f}')
-        plt.tight_layout()
-        stash_fig_page()
-
-        plt.figure('Grayscale intensity optimisation', figsize=(24, 12))
-        setup_new_fig_page()
-        plt.suptitle(f'primary frame idx: {primary_frame_idx}')
-        ax = plt.subplot(3, 3, 1)
-        plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba')
-        plt.title('up_model_frames_idxs')
-        ax = plt.subplot(3, 3, 2, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(np.clip(up_model_synthetic_frame_img / 255, 0, 1))
-        plt.title('up_model_synthetic_frame_img')
-        plt.subplot(3, 3, 3, sharex=ax, sharey=ax)
-        plt.imshow(up_max_model_mapping_scores, vmin=0, vmax=1)
-        plt.title('up_max_model_mapping_scores')
-        ax = plt.subplot(3, 3, 4, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        pixel_frame_bin_counts = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
-        for xy, pixel_frame_bin in pixel_frame_bins.items():
-            pixel_frame_bin_counts[xy[1], xy[0]] = len(pixel_frame_bin)
-        plt.imshow(pixel_frame_bin_counts, extent=xys_extent)
-        plt.title('pixel_frame_bin_counts')
-        if weighted_pixel_deltas is not None:
-            ax = plt.subplot(3, 3, 5, sharex=ax, sharey=ax)
+        if ipython_env:
+            plt.figure('Loss components', figsize=(24, 12))
+            setup_new_fig_page()
+            loss = sum(np.mean(loss_component.numpy(force=True)) for loss_component in loss_components.values())
+            plt.suptitle(f'primary frame idx: {primary_frame_idx} {loss:.5f}')
+            ncols = 3
+            nrows = int(np.ceil((2 + len(loss_components)) / ncols))
+            ax = plt.subplot(nrows, ncols, 1)
+            plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1,
+                       extent=xys_extent, interpolation_stage='rgba')
+            ax = plt.subplot(nrows, ncols, 2, sharex=ax, sharey=ax)
             ax.set_facecolor('grey')
-            weighted_pixel_delta_img = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
-            for xy, value in zip(pixel_frame_bins, weighted_pixel_deltas.numpy(force=True)):
-                weighted_pixel_delta_img[xy[1], xy[0]] = value
-            absvmax = np.nanmax(np.abs(weighted_pixel_delta_img))
-            plt.imshow(weighted_pixel_delta_img, cmap='seismic', vmin=-absvmax, vmax=absvmax, extent=xys_extent)
-            plt.title('weighted_pixel_delta_img')
-            plt.subplot(3, 3, 6)
-            plt.hist(weighted_pixel_deltas.numpy(force=True), bins=100)
-            plt.title('weighted_pixel_deltas')
-        if weighted_pixels_mean is not None:
-            ax = plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
-            ax.set_facecolor('darkslateblue')
-            weighted_pixels_mean_img = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
-            for xy, value in zip(pixel_frame_bins, weighted_pixels_mean.numpy(force=True)):
-                weighted_pixels_mean_img[xy[1], xy[0]] = value
-            plt.imshow(weighted_pixels_mean_img, cmap='gray', vmin=0, vmax=1, extent=xys_extent)
-            plt.title('weighted_pixels_mean_img')
-        if weighted_pixels_var is not None:
-            ax = plt.subplot(3, 3, 8, sharex=ax, sharey=ax)
+            plt.imshow(np.clip(filtered_up_model_synthetic_frame_img / 255, 0, 1))
+            for idx, (title, loss_component) in enumerate(loss_components.items()):
+                loss_component = loss_component.numpy(force=True)
+                if len(loss_component.shape) < 2:
+                    plt.subplot(nrows, ncols, 3 + idx)
+                    plt.plot(loss_component)
+                else:
+                    plt.subplot(nrows, ncols, 3 + idx, sharex=ax, sharey=ax)
+                    wp = (xys_extent[1] - xys_extent[0]) / model_frames_idxs.shape[1]
+                    hp = (xys_extent[2] - xys_extent[3]) / model_frames_idxs.shape[0]
+                    shape_diff = np.array(model_frames_idxs.shape[:2]) - np.array(loss_component.shape[:2])
+                    sub_xys_extent = (xys_extent[0] + wp * shape_diff[1] / 2, xys_extent[1] - wp * shape_diff[1] / 2,
+                                      xys_extent[2] - hp * shape_diff[0] / 2, xys_extent[3] + hp * shape_diff[0] / 2)
+                    plt.imshow(loss_component, extent=sub_xys_extent)
+                plt.title(f'{title} {np.mean(loss_component):.5f}')
+            plt.tight_layout()
+            stash_fig_page()
+
+            plt.figure('Grayscale intensity optimisation', figsize=(24, 12))
+            setup_new_fig_page()
+            plt.suptitle(f'primary frame idx: {primary_frame_idx}')
+            ax = plt.subplot(3, 3, 1)
+            plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba')
+            plt.title('up_model_frames_idxs')
+            ax = plt.subplot(3, 3, 2, sharex=ax, sharey=ax)
             ax.set_facecolor('grey')
-            weighted_pixels_var_img = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
-            for xy, value in zip(pixel_frame_bins, weighted_pixels_var.numpy(force=True)):
-                weighted_pixels_var_img[xy[1], xy[0]] = value
-            plt.imshow(weighted_pixels_var_img, extent=xys_extent)
-            plt.title('weighted_pixels_var_img')
-            plt.subplot(3, 3, 9)
-            plt.hist(weighted_pixels_var.numpy(force=True), bins=100, log=True)
-            plt.title('weighted_pixels_var')
-        plt.tight_layout()
-        stash_fig_page()
+            plt.imshow(np.clip(up_model_synthetic_frame_img / 255, 0, 1))
+            plt.title('up_model_synthetic_frame_img')
+            plt.subplot(3, 3, 3, sharex=ax, sharey=ax)
+            plt.imshow(up_max_model_mapping_scores, vmin=0, vmax=1)
+            plt.title('up_max_model_mapping_scores')
+            ax = plt.subplot(3, 3, 4, sharex=ax, sharey=ax)
+            ax.set_facecolor('grey')
+            pixel_frame_bin_counts = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
+            for xy, pixel_frame_bin in pixel_frame_bins.items():
+                pixel_frame_bin_counts[xy[1], xy[0]] = len(pixel_frame_bin)
+            plt.imshow(pixel_frame_bin_counts, extent=xys_extent)
+            plt.title('pixel_frame_bin_counts')
+            if weighted_pixel_deltas is not None:
+                ax = plt.subplot(3, 3, 5, sharex=ax, sharey=ax)
+                ax.set_facecolor('grey')
+                weighted_pixel_delta_img = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
+                for xy, value in zip(pixel_frame_bins, weighted_pixel_deltas.numpy(force=True)):
+                    weighted_pixel_delta_img[xy[1], xy[0]] = value
+                absvmax = np.nanmax(np.abs(weighted_pixel_delta_img))
+                plt.imshow(weighted_pixel_delta_img, cmap='seismic', vmin=-absvmax, vmax=absvmax, extent=xys_extent)
+                plt.title('weighted_pixel_delta_img')
+                plt.subplot(3, 3, 6)
+                plt.hist(weighted_pixel_deltas.numpy(force=True), bins=100)
+                plt.title('weighted_pixel_deltas')
+            if weighted_pixels_mean is not None:
+                ax = plt.subplot(3, 3, 7, sharex=ax, sharey=ax)
+                ax.set_facecolor('darkslateblue')
+                weighted_pixels_mean_img = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
+                for xy, value in zip(pixel_frame_bins, weighted_pixels_mean.numpy(force=True)):
+                    weighted_pixels_mean_img[xy[1], xy[0]] = value
+                plt.imshow(weighted_pixels_mean_img, cmap='gray', vmin=0, vmax=1, extent=xys_extent)
+                plt.title('weighted_pixels_mean_img')
+            if weighted_pixels_var is not None:
+                ax = plt.subplot(3, 3, 8, sharex=ax, sharey=ax)
+                ax.set_facecolor('grey')
+                weighted_pixels_var_img = np.full((hg, wg), fill_value=np.nan, dtype=np.float32)
+                for xy, value in zip(pixel_frame_bins, weighted_pixels_var.numpy(force=True)):
+                    weighted_pixels_var_img[xy[1], xy[0]] = value
+                plt.imshow(weighted_pixels_var_img, extent=xys_extent)
+                plt.title('weighted_pixels_var_img')
+                plt.subplot(3, 3, 9)
+                plt.hist(weighted_pixels_var.numpy(force=True), bins=100, log=True)
+                plt.title('weighted_pixels_var')
+            plt.tight_layout()
+            stash_fig_page()
 
-        plt.figure('Optimised mapping', figsize=(24, 12))
-        setup_new_fig_page()
-        plt.suptitle(f'primary frame idx: {primary_frame_idx}')
-        ax = plt.subplot(2, 3, 1)
-        plt.imshow(model_mapping_scores_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores_cmap.N-1,
-                   extent=xys_extent, interpolation_stage='rgba')
-        plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
-        plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1,
-                   extent=xys_extent, interpolation_stage='rgba')
-        plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
-        plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba')
-        ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(np.clip(up_model_synthetic_frame_img / 255, 0, 1))
-        plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
-        plt.imshow(up_max_model_mapping_scores, vmin=0, vmax=1)
-        ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
-        ax.set_facecolor('grey')
-        plt.imshow(np.clip(filtered_up_model_synthetic_frame_img / 255, 0, 1))
-        plt.tight_layout()
-        stash_fig_page()
+            plt.figure('Optimised mapping', figsize=(24, 12))
+            setup_new_fig_page()
+            plt.suptitle(f'primary frame idx: {primary_frame_idx}')
+            ax = plt.subplot(2, 3, 1)
+            plt.imshow(model_mapping_scores_frame_idxs, cmap=model_mapping_scores_cmap, vmin=0, vmax=model_mapping_scores_cmap.N-1,
+                       extent=xys_extent, interpolation_stage='rgba')
+            plt.subplot(2, 3, 2, sharex=ax, sharey=ax)
+            plt.imshow(model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1,
+                       extent=xys_extent, interpolation_stage='rgba')
+            plt.subplot(2, 3, 3, sharex=ax, sharey=ax)
+            plt.imshow(up_model_frames_idxs, cmap=up_model_cmap, vmin=0, vmax=up_model_cmap.N-1, interpolation_stage='rgba')
+            ax = plt.subplot(2, 3, 4, sharex=ax, sharey=ax)
+            ax.set_facecolor('grey')
+            plt.imshow(np.clip(up_model_synthetic_frame_img / 255, 0, 1))
+            plt.subplot(2, 3, 5, sharex=ax, sharey=ax)
+            plt.imshow(up_max_model_mapping_scores, vmin=0, vmax=1)
+            ax = plt.subplot(2, 3, 6, sharex=ax, sharey=ax)
+            ax.set_facecolor('grey')
+            plt.imshow(np.clip(filtered_up_model_synthetic_frame_img / 255, 0, 1))
+            plt.tight_layout()
+            stash_fig_page()
 
-        plt.figure('Optimised synthetic view', figsize=(24, 12))
-        setup_new_fig_page()
-        plt.suptitle(f'primary frame idx: {primary_frame_idx}')
-        ax = plt.subplot(1, 1, 1)
-        ax.set_facecolor('grey')
-        plt.imshow(np.clip(filtered_up_model_synthetic_frame_img / 255, 0, 1))
-        plt.tight_layout()
-        stash_fig_page()
+            plt.figure('Optimised synthetic view', figsize=(24, 12))
+            setup_new_fig_page()
+            plt.suptitle(f'primary frame idx: {primary_frame_idx}')
+            ax = plt.subplot(1, 1, 1)
+            ax.set_facecolor('grey')
+            plt.imshow(np.clip(filtered_up_model_synthetic_frame_img / 255, 0, 1))
+            plt.tight_layout()
+            stash_fig_page()
 
     # %%
 
