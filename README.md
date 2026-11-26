@@ -44,7 +44,7 @@ Activate the virtual environment and run the stages of the pipeline in sequence 
     python.exe integrate_depth_images.py
     python.exe view_synthesis.py
 
-If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/a401-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/a401-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over 7 minutes to complete depending on your system[^ExecutionTimes].
+If everything is installed and working correctly, the smallest (almost minimal) example dataset of JPEG images included in the cloned repository's `pipeline-input/a401-30frames-iso46to46` subdirectory should be stitched together to generate a synthetic view saved as a JPEG image (with a timestamped filename) in the `pipeline-workspace/a401-30frames-iso46to46/view_synthesis` subdirectory. The entire pipeline sequence may take over 3 minutes to complete depending on your system[^ExecutionTimes].
 
 <img src="docs/images/a401-30frames-iso46to46-view_synthesis-output.jpg" alt="Example synthesised view" height="200px"/>
 
@@ -69,7 +69,7 @@ For example: <a id="example_pipeline_sequence_a401-351frames-iso45to35"></a>
     python.exe integrate_depth_images.py
     python.exe view_synthesis.py
 
-The entire pipeline sequence may take well over 30 minutes to complete for any dataset depending on your system[^ExecutionTimes].
+The entire pipeline sequence may take well over 10 minutes to complete for any dataset depending on your system[^ExecutionTimes].
 
 Note that if `pipeline-workspace/working_subdir.txt` does not exist, then the pipeline selects the smallest dataset. After running the pipeline in the section [Initial test run on a tiny example dataset](#initial-test-run-on-a-tiny-example-dataset), the pipeline should have written `a401-30frames-iso46to46` to `pipeline-workspace/working_subdir.txt`.
 
